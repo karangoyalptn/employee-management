@@ -203,13 +203,35 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
     employee || { name: "", role: "", gender: "Male", shift: "Day shift", salary: "", aadhar_last4: "", pan_last4: "", photo_url: "" }
   );
   const [err, setErr] = useState("");
+  const [photoFile, setPhotoFile] = useState(null);
+  const [idDocFile, setIdDocFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(employee?.photo_url || "");
+  const [hasIdDoc, setHasIdDoc] = useState(!!employee?.has_id_doc);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const photoRef = useRef();
+  const idRef = useRef();
+
   const update = (key, value) => setForm({ ...form, [key]: value });
+
+  const pickPhoto = (f) => {
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) return setErr("Photo must be under 2 MB.");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) return setErr("Photo must be JPEG, PNG or WebP.");
+    setErr(""); setPhotoFile(f); setPhotoPreview(URL.createObjectURL(f));
+  };
+  const pickIdDoc = (f) => {
+    if (!f) return;
+    if (f.size > 5 * 1024 * 1024) return setErr("ID document must be under 5 MB.");
+    if (!["application/pdf", "image/jpeg", "image/png"].includes(f.type)) return setErr("ID document must be PDF, JPEG or PNG.");
+    setErr(""); setIdDocFile(f);
+  };
+
   const submit = async () => {
     if (!form.name || form.name.length < 2) return setErr("Name is required.");
     const salaryNum = parseFloat(String(form.salary).replace(/[^0-9.]/g, ""));
     if (!Number.isFinite(salaryNum) || salaryNum < 0) return setErr("Enter a valid salary.");
     setErr("");
-    await onSave({
+    const saved = await onSave({
       ...form,
       salary: salaryNum,
       role: form.role || null,
@@ -217,14 +239,62 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
       pan_last4: (form.pan_last4 || "").slice(-4) || null,
       photo_url: form.photo_url || null,
     });
+    if (!saved?.id) return;
+    // Upload files if any
+    if (photoFile || idDocFile) {
+      setUploadBusy(true);
+      try {
+        if (photoFile) await api.uploadEmployeePhoto(saved.id, photoFile);
+        if (idDocFile) await api.uploadEmployeeIdDoc(saved.id, idDocFile);
+      } catch (e) { alert("Employee saved but media upload failed: " + (e.detail || e.message)); }
+      finally { setUploadBusy(false); }
+    }
+    onClose();
   };
+
+  const viewIdDoc = async () => {
+    try { const { url } = await api.getEmployeeIdDocUrl(employee.id); if (url) window.open(url, "_blank"); }
+    catch (e) { alert(e.detail || e.message); }
+  };
+  const removePhoto = async () => {
+    if (!employee?.id) { setPhotoFile(null); setPhotoPreview(""); return; }
+    if (!window.confirm("Remove photo?")) return;
+    try { await api.deleteEmployeePhoto(employee.id); setPhotoPreview(""); setPhotoFile(null); }
+    catch (e) { alert(e.detail || e.message); }
+  };
+  const removeIdDoc = async () => {
+    if (!employee?.id) { setIdDocFile(null); return; }
+    if (!window.confirm("Remove ID document?")) return;
+    try { await api.deleteEmployeeIdDoc(employee.id); setHasIdDoc(false); setIdDocFile(null); }
+    catch (e) { alert(e.detail || e.message); }
+  };
+
+  const canViewIdDoc = role === "admin" || role === "leadership";
+
   return (
     <div className="modal-backdrop">
-      <div className="modal" data-testid="employee-modal">
+      <div className="modal" data-testid="employee-modal" style={{ width: "min(680px, 100%)" }}>
         <div className="modal-head">
           <div><span className="eyebrow">EMPLOYEE RECORD</span><h2>{employee?.id ? "Edit employee" : "Add employee"}</h2></div>
           <button data-testid="employee-modal-close-button" className="icon-button" onClick={onClose}><X size={18} /></button>
         </div>
+
+        <div style={{ display: "flex", gap: 18, alignItems: "center", marginBottom: 18 }}>
+          <div className="avatar" style={{ width: 72, height: 72 }}>
+            {photoPreview ? <img src={photoPreview} alt="" /> : <span style={{ fontSize: 22 }}>{initialsOf(form.name)}</span>}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <input ref={photoRef} data-testid="employee-photo-input" type="file" accept="image/jpeg,image/png,image/webp" style={{ display: "none" }} onChange={(e) => pickPhoto(e.target.files[0])} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button data-testid="employee-photo-pick-button" className="outline-button" onClick={() => photoRef.current?.click()}>
+                {photoPreview ? "Change photo" : "Add photo"}
+              </button>
+              {photoPreview && <button data-testid="employee-photo-remove-button" className="outline-button" onClick={removePhoto}>Remove</button>}
+            </div>
+            <p className="muted" style={{ fontSize: 10, margin: 0 }}>JPEG/PNG/WebP · under 2 MB</p>
+          </div>
+        </div>
+
         <div className="form-grid">
           <label>Full name *<input data-testid="employee-name-input" value={form.name} onChange={(e) => update("name", e.target.value)} placeholder="e.g. Kavita Rao" /></label>
           <label>Designation<input data-testid="employee-role-input" value={form.role || ""} onChange={(e) => update("role", e.target.value)} placeholder="e.g. Line Manager" /></label>
@@ -243,12 +313,26 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
           )}
           <label>Aadhar last 4<input data-testid="employee-aadhar-input" value={form.aadhar_last4 || ""} maxLength={4} onChange={(e) => update("aadhar_last4", e.target.value.replace(/\D/g, ""))} placeholder="1234" /></label>
           <label>PAN last 4<input data-testid="employee-pan-input" value={form.pan_last4 || ""} maxLength={4} onChange={(e) => update("pan_last4", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} placeholder="AB1C" /></label>
-          <label>Photo URL<input data-testid="employee-photo-input" value={form.photo_url || ""} onChange={(e) => update("photo_url", e.target.value)} placeholder="https://…" /></label>
         </div>
+
+        <div className="doc-upload">
+          <div className="upload-icon"><UploadCloud size={19} /></div>
+          <div style={{ flex: 1 }}>
+            <strong>Identity document {hasIdDoc && <span style={{ color: "var(--green)" }}>· uploaded</span>}{idDocFile && <span style={{ color: "var(--blue)" }}>· {idDocFile.name}</span>}</strong>
+            <p>Aadhar / PAN scan · PDF, JPG, PNG · up to 5 MB · viewable to Admin & Leadership</p>
+          </div>
+          <input ref={idRef} data-testid="employee-iddoc-input" type="file" accept="application/pdf,image/jpeg,image/png" style={{ display: "none" }} onChange={(e) => pickIdDoc(e.target.files[0])} />
+          <button data-testid="employee-iddoc-pick-button" className="outline-button" onClick={() => idRef.current?.click()}>Choose</button>
+          {employee?.id && hasIdDoc && canViewIdDoc && <button data-testid="employee-iddoc-view-button" className="outline-button" onClick={viewIdDoc}>View</button>}
+          {employee?.id && hasIdDoc && <button data-testid="employee-iddoc-remove-button" className="outline-button" onClick={removeIdDoc}>Remove</button>}
+        </div>
+
         {err && <p data-testid="employee-form-error" style={{ color: "var(--red)", fontSize: 11 }}>{err}</p>}
         <div className="modal-actions">
           <button data-testid="employee-cancel-button" className="outline-button" onClick={onClose}>Cancel</button>
-          <button data-testid="employee-save-button" className="primary-button" onClick={submit} disabled={saving}>{saving ? "Saving…" : "Save employee"} <span>→</span></button>
+          <button data-testid="employee-save-button" className="primary-button" onClick={submit} disabled={saving || uploadBusy}>
+            {(saving || uploadBusy) ? "Saving…" : "Save employee"} <span>→</span>
+          </button>
         </div>
       </div>
     </div>
@@ -343,6 +427,59 @@ function AddMemberModal({ onClose, onSubmit, saving }) {
         <div className="modal-actions">
           <button data-testid="add-member-cancel-button" className="outline-button" onClick={onClose}>Cancel</button>
           <button data-testid="add-member-submit-button" className="primary-button" onClick={submit} disabled={saving}>{saving ? "Adding…" : "Add member"} <span>→</span></button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TagsModal({ onClose, onChanged, role }) {
+  const [tags, setTags] = useState([]);
+  const [name, setName] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const canEdit = role === "admin" || role === "leadership";
+  const load = () => api.reportTags().then((d) => setTags(d.tag_rows || [])).catch(() => {});
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    if (name.trim().length < 2) return setErr("Tag name must be at least 2 characters.");
+    setErr(""); setSaving(true);
+    try { await api.createTag(name.trim()); setName(""); await load(); onChanged?.(); }
+    catch (e) { setErr(e.detail || e.message); }
+    finally { setSaving(false); }
+  };
+  const remove = async (t) => {
+    if (!window.confirm(`Remove tag "${t.name}"?`)) return;
+    try { await api.deleteTag(t.id); await load(); onChanged?.(); }
+    catch (e) { alert(e.detail || e.message); }
+  };
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" data-testid="tags-modal" style={{ width: "min(520px, 100%)" }}>
+        <div className="modal-head">
+          <div><span className="eyebrow">REPORT TAGS</span><h2>Manage tags</h2></div>
+          <button data-testid="tags-close-button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        {canEdit && (
+          <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+            <input data-testid="tags-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="New tag name" style={{ background: "#171b23", border: "1px solid #303848", color: "#fff", flex: 1, height: 42, padding: "0 13px" }} />
+            <button data-testid="tags-add-button" className="primary-button" onClick={add} disabled={saving}>{saving ? "Adding…" : <><Plus size={15}/> Add tag</>}</button>
+          </div>
+        )}
+        {err && <p data-testid="tags-error" style={{ color: "var(--red)", fontSize: 11 }}>{err}</p>}
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Name</th>{canEdit && <th /> }</tr></thead>
+            <tbody>
+              {tags.map((t) => (
+                <tr key={t.id} data-testid={`tag-row-${t.id}`}>
+                  <td><span className="report-tag">{t.name}</span></td>
+                  {canEdit && <td><button data-testid={`tag-delete-${t.id}-button`} className="icon-button danger" onClick={() => remove(t)}><Trash2 size={15} /></button></td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {tags.length === 0 && <div className="empty-state">No tags yet.</div>}
         </div>
       </div>
     </div>
@@ -475,6 +612,7 @@ function App() {
   const [uploadModal, setUploadModal] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [teamModal, setTeamModal] = useState(false);
+  const [tagsModal, setTagsModal] = useState(false);
   const [absenceFor, setAbsenceFor] = useState(null);
   const [notice, setNotice] = useState("");
   const [activeTag, setActiveTag] = useState("All reports");
@@ -523,10 +661,13 @@ function App() {
   const saveEmployee = async (payload) => {
     setSavingEmployee(true);
     try {
-      if (payload.id) await api.updateEmployee(payload.id, payload);
-      else await api.createEmployee(payload);
-      setModal(null); flash("Employee record saved"); await refreshEmployees();
-    } catch (e) { alert(e.detail || e.message); }
+      let saved;
+      if (payload.id) saved = await api.updateEmployee(payload.id, payload);
+      else saved = await api.createEmployee(payload);
+      flash("Employee record saved"); await refreshEmployees();
+      // don't close if uploads are pending
+      return saved;
+    } catch (e) { alert(e.detail || e.message); return null; }
     finally { setSavingEmployee(false); }
   };
   const deleteEmployee = async (id) => {
@@ -629,12 +770,14 @@ function App() {
             onUpload={canUploadReports(role) ? () => setUploadModal(true) : null}
             onDownload={downloadReport}
             onDelete={canDeleteEmployees(role) ? deleteReport : null}
+            onManageTags={canUploadReports(role) ? () => setTagsModal(true) : null}
           />
         )}
         {notice && <div className="toast" data-testid="success-notice">{notice}<span>✓</span></div>}
         {modal && <EmployeeModal employee={modal.id ? modal : null} role={role} onClose={() => setModal(null)} onSave={saveEmployee} saving={savingEmployee} />}
         {uploadModal && <ReportUploadModal onClose={() => setUploadModal(false)} onSubmit={uploadReport} tags={tagsMeta.tags} accessLevels={availableAccess} uploading={uploading} />}
         {teamModal && <TeamModal onClose={() => setTeamModal(false)} currentUserId={me.profile.id} />}
+        {tagsModal && <TagsModal onClose={() => setTagsModal(false)} onChanged={() => api.reportTags().then(setTagsMeta).catch(() => {})} role={role} />}
         {absenceFor && (
           <AbsenceHistoryModal
             employee={absenceFor}
@@ -779,12 +922,15 @@ function Employees({ employees, search, setSearch, shift, setShift, role, onAdd,
   );
 }
 
-function Reports({ reports, tags, activeTag, setActiveTag, onUpload, onDownload, onDelete }) {
+function Reports({ reports, tags, activeTag, setActiveTag, onUpload, onDownload, onDelete, onManageTags }) {
   const filterTags = ["All reports", ...tags];
   return (
     <div className="page">
       <PageHead eyebrow="DOCUMENT REPOSITORY" title="Reports">
-        {onUpload && <button data-testid="upload-report-button" className="primary-button" onClick={onUpload}><UploadCloud size={17} /> Upload report</button>}
+        <div style={{ display: "flex", gap: 8 }}>
+          {onManageTags && <button data-testid="manage-tags-button" className="outline-button" onClick={onManageTags}>Manage tags</button>}
+          {onUpload && <button data-testid="upload-report-button" className="primary-button" onClick={onUpload}><UploadCloud size={17} /> Upload report</button>}
+        </div>
       </PageHead>
       <section className="report-intro">
         <div>

@@ -47,6 +47,26 @@ async function request(path, options = {}) {
   return data;
 }
 
+async function uploadFile(path, file, extraFields = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const slug = getWorkspaceSlug();
+  const form = new FormData();
+  form.append("file", file);
+  for (const [k, v] of Object.entries(extraFields)) form.append(k, v);
+  const headers = { Authorization: `Bearer ${token}` };
+  if (slug) headers["X-Workspace-Slug"] = slug;
+  const res = await fetch(`${BASE}/api${path}`, { method: "POST", headers, body: form });
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!res.ok) {
+    const err = new Error(body?.detail || res.statusText);
+    err.status = res.status; err.detail = body?.detail;
+    throw err;
+  }
+  return body;
+}
+
 export const api = {
   lookupCompany: (slug) => request(`/companies/lookup?slug=${encodeURIComponent(slug)}`),
 
@@ -74,26 +94,15 @@ export const api = {
 
   listReports: (tag) => request(`/reports${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`),
   reportTags: () => request("/reports/tags"),
-  uploadReport: async (file, tag, access) => {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    const slug = getWorkspaceSlug();
-    const form = new FormData();
-    form.append("file", file);
-    form.append("tag", tag);
-    form.append("access", access);
-    const headers = { Authorization: `Bearer ${token}` };
-    if (slug) headers["X-Workspace-Slug"] = slug;
-    const res = await fetch(`${BASE}/api/reports/upload`, { method: "POST", headers, body: form });
-    const text = await res.text();
-    const body = text ? JSON.parse(text) : null;
-    if (!res.ok) {
-      const err = new Error(body?.detail || res.statusText);
-      err.status = res.status; err.detail = body?.detail;
-      throw err;
-    }
-    return body;
-  },
+  createTag: (name) => request("/reports/tags", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteTag: (id) => request(`/reports/tags/${id}`, { method: "DELETE" }),
+
+  uploadEmployeePhoto: async (id, file) => uploadFile(`/employees/${id}/photo`, file),
+  deleteEmployeePhoto: (id) => request(`/employees/${id}/photo`, { method: "DELETE" }),
+  uploadEmployeeIdDoc: async (id, file) => uploadFile(`/employees/${id}/id-doc`, file),
+  getEmployeeIdDocUrl: (id) => request(`/employees/${id}/id-doc`),
+  deleteEmployeeIdDoc: (id) => request(`/employees/${id}/id-doc`, { method: "DELETE" }),
+  uploadReport: async (file, tag, access) => uploadFile("/reports/upload", file, { tag, access }),
   downloadReport: (id) => request(`/reports/${id}/download`),
   deleteReport: (id) => request(`/reports/${id}`, { method: "DELETE" }),
 };

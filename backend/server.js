@@ -25,10 +25,12 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const REPORTS_BUCKET = "reports";
 const PHOTOS_BUCKET = "employee-photos";
-const ALLOWED_TAGS = ["Production", "Safety", "Finance", "HR", "Maintenance", "Quality", "Compliance"];
+const ID_DOCS_BUCKET = "employee-id-docs";
 const ALLOWED_ACCESS = ["all", "management", "leadership", "admin"];
 const ALLOWED_ROLES = ["admin", "leadership", "manager", "viewer"];
 const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
+const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_ID_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
 // Ensure storage buckets exist (best-effort)
 (async () => {
@@ -37,6 +39,7 @@ const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pd
     const names = new Set((buckets || []).map((b) => b.name));
     if (!names.has(REPORTS_BUCKET)) await sb.storage.createBucket(REPORTS_BUCKET, { public: false });
     if (!names.has(PHOTOS_BUCKET)) await sb.storage.createBucket(PHOTOS_BUCKET, { public: true });
+    if (!names.has(ID_DOCS_BUCKET)) await sb.storage.createBucket(ID_DOCS_BUCKET, { public: false });
   } catch (e) {
     console.warn("[startup] bucket bootstrap:", e.message);
   }
@@ -101,6 +104,7 @@ const serializeEmployee = (e, role) => ({
   aadhar_last4: e.aadhar_last4,
   pan_last4: e.pan_last4,
   photo_url: e.photo_url,
+  has_id_doc: !!e.id_doc_path,
 });
 
 const nowIso = () => new Date().toISOString();
@@ -295,6 +299,103 @@ api.delete("/employees/:id", async (req, res) => {
   res.status(204).end();
 });
 
+// ---------- Employee photo & ID doc ----------
+const uploadPhoto = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+const uploadIdDoc = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+async function loadEmployeeInWorkspace(id, companyId) {
+  const { data } = await sb.from("employees").select("*").eq("id", id).maybeSingle();
+  if (!data || data.company_id !== companyId) return null;
+  return data;
+}
+
+api.post("/employees/:id/photo", uploadPhoto.single("file"), async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  if (!req.file) return httpErr(res, 400, "file required");
+  if (!ALLOWED_IMAGE_MIME.has(req.file.mimetype)) return httpErr(res, 400, "photo must be JPEG, PNG or WebP");
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+
+  const ext = (req.file.originalname.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
+  const path = `${ctx.profile.company_id}/${emp.id}/${crypto.randomUUID()}.${ext}`;
+  const { error: upErr } = await sb.storage.from(PHOTOS_BUCKET).upload(path, req.file.buffer, {
+    contentType: req.file.mimetype, upsert: false,
+  });
+  if (upErr) return httpErr(res, 500, `storage: ${upErr.message}`);
+  const { data: pub } = sb.storage.from(PHOTOS_BUCKET).getPublicUrl(path);
+  const publicUrl = pub.publicUrl;
+
+  // best-effort delete of previous photo
+  if (emp.photo_url && emp.photo_url.includes(`/${PHOTOS_BUCKET}/`)) {
+    const prev = emp.photo_url.split(`/${PHOTOS_BUCKET}/`)[1];
+    if (prev) await sb.storage.from(PHOTOS_BUCKET).remove([prev]).catch(() => {});
+  }
+
+  const { error: uErr } = await sb.from("employees").update({ photo_url: publicUrl, updated_at: nowIso() }).eq("id", emp.id);
+  if (uErr) return httpErr(res, 500, uErr.message);
+  res.status(201).json({ photo_url: publicUrl });
+});
+
+api.delete("/employees/:id/photo", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+  if (emp.photo_url && emp.photo_url.includes(`/${PHOTOS_BUCKET}/`)) {
+    const prev = emp.photo_url.split(`/${PHOTOS_BUCKET}/`)[1];
+    if (prev) await sb.storage.from(PHOTOS_BUCKET).remove([prev]).catch(() => {});
+  }
+  await sb.from("employees").update({ photo_url: null, updated_at: nowIso() }).eq("id", emp.id);
+  res.status(204).end();
+});
+
+api.post("/employees/:id/id-doc", uploadIdDoc.single("file"), async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  if (!req.file) return httpErr(res, 400, "file required");
+  if (!ALLOWED_ID_MIME.has(req.file.mimetype)) return httpErr(res, 400, "ID doc must be PDF, JPEG or PNG");
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+
+  const ext = (req.file.originalname.split(".").pop() || "pdf").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "bin";
+  const path = `${ctx.profile.company_id}/${emp.id}/${crypto.randomUUID()}.${ext}`;
+  const { error: upErr } = await sb.storage.from(ID_DOCS_BUCKET).upload(path, req.file.buffer, {
+    contentType: req.file.mimetype, upsert: false,
+  });
+  if (upErr) return httpErr(res, 500, `storage: ${upErr.message}`);
+
+  if (emp.id_doc_path) await sb.storage.from(ID_DOCS_BUCKET).remove([emp.id_doc_path]).catch(() => {});
+  await sb.from("employees").update({ id_doc_path: path, updated_at: nowIso() }).eq("id", emp.id);
+  res.status(201).json({ has_id_doc: true });
+});
+
+api.get("/employees/:id/id-doc", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "ID docs viewable only by Admin/Leadership");
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+  if (!emp.id_doc_path) return httpErr(res, 404, "No ID doc uploaded");
+  const { data, error } = await sb.storage.from(ID_DOCS_BUCKET).createSignedUrl(emp.id_doc_path, 300);
+  if (error) return httpErr(res, 500, error.message);
+  res.json({ url: data.signedUrl });
+});
+
+api.delete("/employees/:id/id-doc", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+  if (emp.id_doc_path) await sb.storage.from(ID_DOCS_BUCKET).remove([emp.id_doc_path]).catch(() => {});
+  await sb.from("employees").update({ id_doc_path: null, updated_at: nowIso() }).eq("id", emp.id);
+  res.status(204).end();
+});
+
 // ---------- Absences ----------
 api.get("/employees/:id/absences", async (req, res) => {
   const ctx = await currentProfile(req);
@@ -346,8 +447,49 @@ api.delete("/absences/:absenceId", async (req, res) => {
   res.status(204).end();
 });
 
+// ---------- Report Tags (workspace-scoped) ----------
+api.get("/reports/tags", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  const { data, error } = await sb
+    .from("report_tags")
+    .select("id,name")
+    .eq("company_id", ctx.profile.company_id)
+    .order("name", { ascending: true });
+  if (error) return httpErr(res, 500, error.message);
+  res.json({ tags: data.map((t) => t.name), tag_rows: data, access_levels: ALLOWED_ACCESS });
+});
+
+api.post("/reports/tags", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  const name = String(req.body?.name || "").trim();
+  if (name.length < 2 || name.length > 60) return httpErr(res, 400, "name must be 2-60 characters");
+  const row = { id: crypto.randomUUID(), company_id: ctx.profile.company_id, name, created_at: nowIso() };
+  const { data, error } = await sb.from("report_tags").insert(row).select().single();
+  if (error) return httpErr(res, error.code === "23505" ? 409 : 500, error.message);
+  res.status(201).json(data);
+});
+
+api.delete("/reports/tags/:tagId", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  const { data: tag } = await sb.from("report_tags").select("*").eq("id", req.params.tagId).maybeSingle();
+  if (!tag || tag.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Tag not found");
+  const { data: usage } = await sb
+    .from("reports")
+    .select("id", { count: "exact", head: true })
+    .eq("company_id", ctx.profile.company_id)
+    .eq("tag", tag.name);
+  if (usage && usage.length > 0) return httpErr(res, 409, "Tag is in use by existing reports");
+  const { error } = await sb.from("report_tags").delete().eq("id", tag.id);
+  if (error) return httpErr(res, 500, error.message);
+  res.status(204).end();
+});
+
 // ---------- Reports ----------
-api.get("/reports/tags", (_req, res) => res.json({ tags: ALLOWED_TAGS, access_levels: ALLOWED_ACCESS }));
 
 api.get("/reports", async (req, res) => {
   const ctx = await currentProfile(req);
@@ -373,7 +515,14 @@ api.post("/reports/upload", upload.single("file"), async (req, res) => {
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
 
   const { tag, access = "leadership" } = req.body || {};
-  if (!ALLOWED_TAGS.includes(tag)) return httpErr(res, 400, `Tag must be one of: ${ALLOWED_TAGS.join(", ")}`);
+  if (!tag) return httpErr(res, 400, "tag required");
+  const { data: tagRow } = await sb
+    .from("report_tags")
+    .select("id")
+    .eq("company_id", ctx.profile.company_id)
+    .eq("name", tag)
+    .maybeSingle();
+  if (!tagRow) return httpErr(res, 400, `Tag '${tag}' not found in this workspace`);
   if (!ALLOWED_ACCESS.includes(access)) return httpErr(res, 400, `Access must be one of: ${ALLOWED_ACCESS.join(", ")}`);
   if (!req.file) return httpErr(res, 400, "file required");
 
