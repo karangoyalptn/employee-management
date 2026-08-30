@@ -68,6 +68,10 @@ export const api = {
   updateEmployee: (id, payload) => request(`/employees/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteEmployee: (id) => request(`/employees/${id}`, { method: "DELETE" }),
 
+  listAbsences: (employeeId) => request(`/employees/${employeeId}/absences`),
+  addAbsence: (employeeId, payload) => request(`/employees/${employeeId}/absences`, { method: "POST", body: JSON.stringify(payload) }),
+  deleteAbsence: (absenceId) => request(`/absences/${absenceId}`, { method: "DELETE" }),
+
   listReports: (tag) => request(`/reports${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`),
   reportTags: () => request("/reports/tags"),
   uploadReport: async (file, tag, access) => {

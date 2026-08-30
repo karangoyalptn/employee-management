@@ -3,6 +3,7 @@ import "@/App.css";
 import {
   Bell, ChevronDown, FileText, Filter, LayoutDashboard, LogOut, Menu, Pencil, Plus,
   Search, Settings, ShieldCheck, Trash2, Users, X, UploadCloud, Download, UserCog, KeyRound,
+  CalendarDays,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { api, getWorkspaceSlug } from "@/lib/api";
@@ -105,6 +106,95 @@ function AccessDenied({ email, onSignOut }) {
         </button>
       </div>
     </main>
+  );
+}
+
+function AbsenceHistoryModal({ employee, canEdit, onClose }) {
+  const [items, setItems] = useState(null);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = () => api.listAbsences(employee.id).then(setItems).catch(() => setItems([]));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [employee.id]);
+
+  const add = async () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return setErr("Date must be YYYY-MM-DD");
+    setErr(""); setSaving(true);
+    try { await api.addAbsence(employee.id, { absence_date: date, reason: reason || null }); setReason(""); await load(); }
+    catch (e) { setErr(e.detail || e.message); }
+    finally { setSaving(false); }
+  };
+  const remove = async (a) => {
+    if (!window.confirm(`Remove absence on ${a.absence_date}?`)) return;
+    try { await api.deleteAbsence(a.id); await load(); }
+    catch (e) { alert(e.detail || e.message); }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" data-testid="absence-modal" style={{ width: "min(680px, 100%)" }}>
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow">ABSENCE HISTORY</span>
+            <h2>{employee.name}</h2>
+            <p className="muted" style={{ margin: "6px 0 0" }}>{employee.role || "—"} · {employee.shift}</p>
+          </div>
+          <button data-testid="absence-close-button" className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        {canEdit && (
+          <div className="form-grid" style={{ marginBottom: 6 }}>
+            <label>Absence date *
+              <input data-testid="absence-date-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <label>Reason (optional)
+              <input data-testid="absence-reason-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Sick leave" />
+            </label>
+          </div>
+        )}
+        {canEdit && (
+          <div className="modal-actions" style={{ borderTop: 0, paddingTop: 0, justifyContent: "flex-start", marginBottom: 12 }}>
+            <button data-testid="absence-add-button" className="primary-button" onClick={add} disabled={saving}>
+              <Plus size={15} /> {saving ? "Saving…" : "Log absence"}
+            </button>
+          </div>
+        )}
+        {err && <p data-testid="absence-error" style={{ color: "var(--red)", fontSize: 11 }}>{err}</p>}
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Reason</th>
+                <th>Logged on</th>
+                {canEdit && <th /> }
+              </tr>
+            </thead>
+            <tbody>
+              {(items || []).map((a) => (
+                <tr key={a.id} data-testid={`absence-row-${a.id}`}>
+                  <td className="salary">{a.absence_date}</td>
+                  <td>{a.reason || "—"}</td>
+                  <td>{a.created_at ? new Date(a.created_at).toLocaleDateString("en-IN") : "—"}</td>
+                  {canEdit && (
+                    <td>
+                      <button data-testid={`absence-delete-${a.id}-button`} className="icon-button danger" onClick={() => remove(a)}>
+                        <Trash2 size={15} />
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {items === null && <div className="empty-state">Loading…</div>}
+          {items && items.length === 0 && <div className="empty-state" data-testid="absence-empty-state">No absences logged yet.</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -385,6 +475,7 @@ function App() {
   const [uploadModal, setUploadModal] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [teamModal, setTeamModal] = useState(false);
+  const [absenceFor, setAbsenceFor] = useState(null);
   const [notice, setNotice] = useState("");
   const [activeTag, setActiveTag] = useState("All reports");
 
@@ -528,6 +619,7 @@ function App() {
             onAdd={canManageEmployees(role) ? () => setModal({}) : null}
             onEdit={canManageEmployees(role) ? setModal : null}
             onDelete={canDeleteEmployees(role) ? deleteEmployee : null}
+            onHistory={setAbsenceFor}
           />
         )}
         {active === "Reports" && (
@@ -543,6 +635,13 @@ function App() {
         {modal && <EmployeeModal employee={modal.id ? modal : null} role={role} onClose={() => setModal(null)} onSave={saveEmployee} saving={savingEmployee} />}
         {uploadModal && <ReportUploadModal onClose={() => setUploadModal(false)} onSubmit={uploadReport} tags={tagsMeta.tags} accessLevels={availableAccess} uploading={uploading} />}
         {teamModal && <TeamModal onClose={() => setTeamModal(false)} currentUserId={me.profile.id} />}
+        {absenceFor && (
+          <AbsenceHistoryModal
+            employee={absenceFor}
+            canEdit={canManageEmployees(role)}
+            onClose={() => setAbsenceFor(null)}
+          />
+        )}
       </main>
     </div>
   );
@@ -620,7 +719,7 @@ function Metric({ label, value, change, note, color }) {
   );
 }
 
-function Employees({ employees, search, setSearch, shift, setShift, role, onAdd, onEdit, onDelete }) {
+function Employees({ employees, search, setSearch, shift, setShift, role, onAdd, onEdit, onDelete, onHistory }) {
   const salaryVisible = canSeeSalary(role);
   return (
     <div className="page">
@@ -663,6 +762,7 @@ function Employees({ employees, search, setSearch, shift, setShift, role, onAdd,
                   {(onEdit || onDelete) && (
                     <td>
                       <div className="row-actions">
+                        <button data-testid={`history-employee-${e.id}-button`} className="icon-button" title="Absence history" onClick={() => onHistory(e)}><CalendarDays size={15} /></button>
                         {onEdit && <button data-testid={`edit-employee-${e.id}-button`} className="icon-button" onClick={() => onEdit(e)}><Pencil size={15} /></button>}
                         {onDelete && <button data-testid={`delete-employee-${e.id}-button`} className="icon-button danger" onClick={() => onDelete(e.id)}><Trash2 size={15} /></button>}
                       </div>

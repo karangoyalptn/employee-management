@@ -295,6 +295,57 @@ api.delete("/employees/:id", async (req, res) => {
   res.status(204).end();
 });
 
+// ---------- Absences ----------
+api.get("/employees/:id/absences", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  const { id } = req.params;
+  const { data: emp } = await sb.from("employees").select("id,company_id").eq("id", id).maybeSingle();
+  if (!emp || emp.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Employee not found");
+  const { data, error } = await sb
+    .from("absences")
+    .select("*")
+    .eq("employee_id", id)
+    .order("absence_date", { ascending: false });
+  if (error) return httpErr(res, 500, error.message);
+  res.json(data);
+});
+
+api.post("/employees/:id/absences", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  const { id } = req.params;
+  const { data: emp } = await sb.from("employees").select("id,company_id").eq("id", id).maybeSingle();
+  if (!emp || emp.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Employee not found");
+  const { absence_date, reason } = req.body || {};
+  if (!absence_date || !/^\d{4}-\d{2}-\d{2}$/.test(absence_date)) return httpErr(res, 400, "absence_date must be YYYY-MM-DD");
+  const row = {
+    id: crypto.randomUUID(),
+    employee_id: id,
+    absence_date,
+    reason: reason ? String(reason).slice(0, 500) : null,
+    created_at: nowIso(),
+  };
+  const { data, error } = await sb.from("absences").insert(row).select().single();
+  if (error) return httpErr(res, 500, error.message);
+  res.status(201).json(data);
+});
+
+api.delete("/absences/:absenceId", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  const { absenceId } = req.params;
+  const { data: abs } = await sb.from("absences").select("id,employee_id").eq("id", absenceId).maybeSingle();
+  if (!abs) return httpErr(res, 404, "Absence not found");
+  const { data: emp } = await sb.from("employees").select("company_id").eq("id", abs.employee_id).maybeSingle();
+  if (!emp || emp.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Absence not found");
+  const { error } = await sb.from("absences").delete().eq("id", absenceId);
+  if (error) return httpErr(res, 500, error.message);
+  res.status(204).end();
+});
+
 // ---------- Reports ----------
 api.get("/reports/tags", (_req, res) => res.json({ tags: ALLOWED_TAGS, access_levels: ALLOWED_ACCESS }));
 
