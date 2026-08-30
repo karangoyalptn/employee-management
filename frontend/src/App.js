@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "@/App.css";
 import { Bell, ChevronDown, FileText, Filter, LayoutDashboard, LogOut, Menu, Pencil, Plus, Search, Settings, ShieldCheck, Trash2, Users, X, UploadCloud } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 const avatarImages = [
   "https://images.unsplash.com/photo-1685475887169-9c9a84bf740f?auto=format&fit=crop&w=120&q=80",
@@ -24,9 +25,12 @@ const seedReports = [
 function Login({ onLogin }) {
   const [email, setEmail] = useState("leadership@apexforge.co");
   const [password, setPassword] = useState("password");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const submit = async () => { setError(""); setLoading(true); const result = await onLogin(email, password); if (result?.error) setError(result.error); setLoading(false); };
   return <main className="login-shell">
     <section className="login-visual"><div className="visual-copy"><span className="eyebrow">APEXFORGE / FACTORY OS</span><h1>Run the floor.<br /><em>Know the people.</em></h1><p>One clear view of your workforce, shifts, and the reports that keep production moving.</p><div className="visual-stat"><strong>286</strong><span>active workforce<br /><small>across 3 production units</small></span></div></div></section>
-    <section className="login-panel"><div className="login-brand"><span className="brand-mark">AF</span><span>ApexForge <b>OS</b></span></div><div className="login-form"><span className="eyebrow">SECURE ACCESS</span><h2>Welcome back</h2><p className="muted">Sign in to your factory control room.</p><label>Email address<input data-testid="login-email-input" value={email} onChange={e => setEmail(e.target.value)} type="email" /></label><label>Password<div className="password-wrap"><input data-testid="login-password-input" value={password} onChange={e => setPassword(e.target.value)} type="password" /><span>•••</span></div></label><div className="form-row"><label className="check"><input data-testid="login-remember-checkbox" type="checkbox" defaultChecked /> <span>Remember me</span></label><button data-testid="forgot-password-button" className="text-button">Forgot password?</button></div><button data-testid="login-submit-button" className="primary-button login-submit" onClick={onLogin}>Enter workspace <span>→</span></button><p className="login-foot"><ShieldCheck size={14} /> Protected workspace · Last secured 2 min ago</p></div><div className="login-footer"><span>© 2024 ApexForge Industries</span><span>Privacy & security</span></div></section>
+    <section className="login-panel"><div className="login-brand"><span className="brand-mark">AF</span><span>ApexForge <b>OS</b></span></div><div className="login-form"><span className="eyebrow">SECURE ACCESS</span><h2>Welcome back</h2><p className="muted">Sign in to your factory control room.</p><label>Email address<input data-testid="login-email-input" value={email} onChange={e => setEmail(e.target.value)} type="email" /></label><label>Password<div className="password-wrap"><input data-testid="login-password-input" value={password} onChange={e => setPassword(e.target.value)} type="password" /><span>•••</span></div></label><div className="form-row"><label className="check"><input data-testid="login-remember-checkbox" type="checkbox" defaultChecked /> <span>Remember me</span></label><button data-testid="forgot-password-button" className="text-button">Forgot password?</button></div>{error && <p className="login-error" data-testid="login-error-message">{error}</p>}<button data-testid="login-submit-button" className="primary-button login-submit" onClick={submit} disabled={loading}>{loading ? "Signing in…" : "Enter workspace"} <span>→</span></button><p className="login-foot"><ShieldCheck size={14} /> Protected workspace · Supabase session security</p></div><div className="login-footer"><span>© 2024 ApexForge Industries</span><span>Privacy & security</span></div></section>
   </main>;
 }
 
@@ -37,7 +41,8 @@ function Modal({ employee, onClose, onSave }) {
 }
 
 function App() {
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [loggedIn, setLoggedInState] = useState(false);
+  const setLoggedIn = (next) => { setLoggedInState(next); if (!next) supabase.auth.signOut(); };
   const [active, setActive] = useState("Overview");
   const [employees, setEmployees] = useState(seedEmployees);
   const [reports, setReports] = useState(seedReports);
@@ -45,10 +50,13 @@ function App() {
   const [shift, setShift] = useState("All shifts");
   const [modal, setModal] = useState(null);
   const [notice, setNotice] = useState("");
+  useEffect(() => { supabase.auth.getSession().then(({ data }) => setLoggedIn(Boolean(data.session))); const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setLoggedIn(Boolean(session))); return () => listener.subscription.unsubscribe(); }, []);
   const filtered = useMemo(() => employees.filter(e => e.name.toLowerCase().includes(search.toLowerCase()) && (shift === "All shifts" || e.shift === shift)), [employees, search, shift]);
   const saveEmployee = (item) => { setEmployees(current => current.some(e => e.id === item.id) ? current.map(e => e.id === item.id ? item : e) : [item, ...current]); setModal(null); setNotice("Employee record saved"); setTimeout(() => setNotice(""), 2500); };
   const deleteEmployee = (id) => { setEmployees(employees.filter(e => e.id !== id)); setNotice("Employee removed from directory"); setTimeout(() => setNotice(""), 2500); };
-  if (!loggedIn) return <Login onLogin={() => setLoggedIn(true)} />;
+  const login = async (email, password) => { const { error } = await supabase.auth.signInWithPassword({ email, password }); return { error: error?.message }; };
+  const logout = async () => { await supabase.auth.signOut(); setLoggedIn(false); };
+  if (!loggedIn) return <Login onLogin={login} />;
   return <div className="app-shell"><aside className="sidebar"><div className="side-brand"><span className="brand-mark">AF</span><span>ApexForge <b>OS</b></span></div><div className="side-label">OPERATIONS</div><nav>{[["Overview", LayoutDashboard], ["Employees", Users], ["Reports", FileText]].map(([label, Icon]) => <button data-testid={`nav-${label.toLowerCase()}-button`} key={label} className={active === label ? "nav-item active" : "nav-item"} onClick={() => setActive(label)}><Icon size={17} /><span>{label}</span>{label === "Reports" && <small>3</small>}</button>)}</nav><div className="side-label settings-label">WORKSPACE</div><button data-testid="nav-settings-button" className="nav-item"><Settings size={17} /><span>Settings</span></button><div className="side-bottom"><div className="status-dot"><i /> Systems operational</div><div className="profile"><img src={avatarImages[0]} alt="" /><div><strong>Priya Nair</strong><span>Leadership</span></div><ChevronDown size={15} /></div><button data-testid="logout-button" className="logout-button" onClick={() => setLoggedIn(false)}><LogOut size={15} /> Sign out</button></div></aside><main className="main-content"><header className="topbar"><button data-testid="mobile-menu-button" className="mobile-menu"><Menu size={20} /></button><div className="breadcrumb">ApexForge <span>/</span> <b>{active}</b></div><div className="top-actions"><button data-testid="notifications-button" className="icon-button notification"><Bell size={18} /><i /></button><div className="top-profile"><span>PN</span><ChevronDown size={14} /></div></div></header>{active === "Overview" && <Overview onViewEmployees={() => setActive("Employees")} onViewReports={() => setActive("Reports")} />}{active === "Employees" && <Employees employees={filtered} search={search} setSearch={setSearch} shift={shift} setShift={setShift} onAdd={() => setModal({})} onEdit={setModal} onDelete={deleteEmployee} />}{active === "Reports" && <Reports reports={reports} onAdd={() => { setReports([{ id: Date.now(), name: "New_Report_May_2024.pdf", date: "Today", owner: "Priya Nair", tag: "Report", access: "Leadership", size: "Pending" }, ...reports]); setNotice("Report added to repository"); setTimeout(() => setNotice(""), 2500); }} />}{notice && <div className="toast" data-testid="success-notice">{notice}<span>✓</span></div>}{modal && <Modal employee={modal.id ? modal : null} onClose={() => setModal(null)} onSave={saveEmployee} />}</main></div>;
 }
 

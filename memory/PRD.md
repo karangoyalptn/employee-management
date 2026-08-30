@@ -33,6 +33,12 @@ Create a JavaScript web app for a small factory with 200–300 employees. Leader
 - Verified production build succeeds with `yarn build`.
 - Frontend testing agent verified login, dashboard, directory, employee CRUD interactions, reports, and mobile overflow behavior.
 
+### 2026-08-30
+- Added Supabase JS client with persistent browser sessions, real password sign-in, session restoration, invalid-login messaging, and session-clearing sign-out.
+- Added async SQLAlchemy foundation using the Supabase Transaction Pooler, with `employees`, `absences`, and `reports` models and a reversible Alembic migration.
+- Added protected FastAPI endpoints for employee CRUD, absence creation, report listing/creation, and Supabase token validation through `/auth/v1/user`.
+- Confirmed `/api/health` and migration head; production frontend build succeeds.
+
 ## Prioritized backlog
 
 ### P0 — Next tasks
@@ -51,4 +57,4 @@ Create a JavaScript web app for a small factory with 200–300 employees. Leader
 - Add configurable report tags and role permission editor.
 
 ## Current status
-The UI is complete and interactive for review. Supabase, JWT persistence, and backend APIs are not wired yet because the user requested UI-only work for this first version.
+Supabase authentication and the backend database/API foundation are connected. Employee and report screens still use local demo state until authenticated API wiring is added. No Supabase test user was provided, so authenticated CRUD remains unverified.
