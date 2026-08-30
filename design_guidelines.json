@@ -1,0 +1,84 @@
+{
+  "app_name": "ApexForge Factory OS",
+  "app_type": "saas_app",
+  "context": "Small factory management system for leadership and managers (200-300 employees)",
+  "theme": "dark",
+  "archetype": "THE PERFORMANCE PRO (Elite Industrial Precision & Control)",
+  "forbidden_rules": {
+    "forbidden_colors": ["#1B93A4", "#7351B7"],
+    "forbidden_fonts": ["space grotesk", "inter for main headings"],
+    "forbidden_patterns": ["Inter everywhere", "Center-everything disease", "Gradient overload (>20%)", "Transparent backgrounds on headers"]
+  },
+  "typography": {
+    "headings": "Barlow Condensed, sans-serif",
+    "body": "DM Sans, sans-serif",
+    "weights": {
+      "display": "font-black tracking-tight",
+      "h1": "text-3xl sm:text-4xl lg:text-5xl font-black tracking-tight",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-bold",
+      "body": "text-base font-normal leading-relaxed"
+    }
+  },
+  "colors": {
+    "canvas": "#0A0B0E",
+    "surface": "#12151C",
+    "surface_elevated": "#1A1F2B",
+    "border_color": "#272E3F",
+    "primary": "#FF3B30",
+    "primary_hover": "#FF453A",
+    "accent_blue": "#0A84FF",
+    "accent_amber": "#FF9F0A",
+    "accent_green": "#30D158",
+    "text_primary": "#F2F4F8",
+    "text_secondary": "#94A3B8"
+  },
+  "roles_and_access": [
+    {
+      "role": "Admin",
+      "permissions": ["Full CRUD on Employees", "Report Upload/Delete", "Role Management", "System Settings", "All Report Tags Access"]
+    },
+    {
+      "role": "Leadership",
+      "permissions": ["View All Employees & Salaries", "View & Upload Reports", "Analytics & Financials", "Executive Export"]
+    },
+    {
+      "role": "Manager",
+      "permissions": ["Manage Shift Employees", "Log Absentees & Daily Notes", "View Shift Reports", "Add/Edit Employee Details"]
+    },
+    {
+      "role": "Viewer",
+      "permissions": ["Read-Only Directory", "View Permitted Reports", "Shift Status Check"]
+    }
+  ],
+  "features": [
+    "Custom JWT Authentication with Pre-configured Role Accounts (Admin, Leadership, Manager, Viewer)",
+    "Overview Control Room Dashboard (Shift OEE, Active Workforce count, Live Alarms, Absentee rate, Quick stats)",
+    "Employee Management Directory: Full search, shift filter (Day/Night), gender filter, sort by salary/name",
+    "Employee Add / Edit Modal & Delete Action: Name, Gender, Aadhar/PAN ID, Photo URL, Shift (Day/Night), Salary, Absentee tracking & history",
+    "Report Management Tab: Document uploads (PDF / Reports) with strict date & file name enforcement, custom tags (e.g. Safety, Financial, Operations, QC), and role-based access restrictions",
+    "Supabase Storage & DB Schema simulation with mock JWT persistence and document repository"
+  ],
+  "image_urls": [
+    {
+      "category": "manager_avatar_1",
+      "url": "https://images.unsplash.com/photo-1685475887169-9c9a84bf740f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwzfHxpbmR1c3RyaWFsJTIwZmFjdG9yeSUyMHdvcmtlciUyMHBvcnRyYWl0JTIwbWFuYWdlcnxlbnwwfHx8fDE3ODgwNjgxMTR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Factory manager portrait 1"
+    },
+    {
+      "category": "manager_avatar_2",
+      "url": "https://images.unsplash.com/photo-1661263989552-d82526d03b0f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwyfHxpbmR1c3RyaWFsJTIwZmFjdG9yeSUyMHdvcmtlciUyMHBvcnRyYWl0JTIwbWFuYWdlcnxlbnwwfHx8fDE3ODgwNjgxMTR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Factory manager portrait 2"
+    },
+    {
+      "category": "machinery_hero",
+      "url": "https://images.unsplash.com/photo-1598299803204-b73796f43289?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwxfHxpbmR1c3RyaWFsJTIwZmFjdG9yeSUyMHdvcmtlciUyMHBvcnRyYWl0JTIwbWFuYWdlcnxlbnwwfHx8fDE3ODgwNjgxMTR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Factory industrial machinery operation"
+    }
+  ],
+  "accessibility_and_testing": {
+    "contrast_ratio": "Minimum 4.5:1 for body text, 3:1 for large text",
+    "interactive_requirements": "All interactive elements include data-testid attributes",
+    "reduced_motion": "Supported via CSS media queries"
+  }
+}
