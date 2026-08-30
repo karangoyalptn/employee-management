@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -17,9 +17,28 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class Company(Base):
+    __tablename__ = "companies"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(160), unique=True)
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # supabase auth uuid
+    email: Mapped[str] = mapped_column(String(255), unique=True)
+    full_name: Mapped[str] = mapped_column(String(160))
+    role: Mapped[str] = mapped_column(String(30))  # admin | leadership | manager | viewer
+    company_id: Mapped[str] = mapped_column(String(36), ForeignKey("companies.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Employee(Base):
     __tablename__ = "employees"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    company_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("companies.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(160), index=True)
     role: Mapped[str | None] = mapped_column(String(120), nullable=True)
     gender: Mapped[str] = mapped_column(String(30))
@@ -44,10 +63,12 @@ class Absence(Base):
 class Report(Base):
     __tablename__ = "reports"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    company_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("companies.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     tag: Mapped[str] = mapped_column(String(80), default="Report", index=True)
     report_date: Mapped[str] = mapped_column(String(10), index=True)
-    access: Mapped[str] = mapped_column(String(120), default="Leadership")
+    access: Mapped[str] = mapped_column(String(120), default="leadership")  # all|management|leadership|admin
     storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    uploaded_by_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

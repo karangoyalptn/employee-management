@@ -58,3 +58,26 @@ Create a JavaScript web app for a small factory with 200–300 employees. Leader
 
 ## Current status
 Supabase authentication and the backend database/API foundation are connected. Employee and report screens still use local demo state until authenticated API wiring is added. No Supabase test user was provided, so authenticated CRUD remains unverified.
+### 2026-08-30 (multi-tenant lockdown)
+- Removed public signup and the onboarding-company flow entirely. Companies are now provisioned only via `scripts/seed_factory.py`.
+- Introduced workspace-scoped access: every API request requires `X-Workspace-Slug`; the header is derived from the subdomain (`<slug>.manage.zreports.com`) or a `?w=<slug>` fallback for the preview URL.
+- `current_profile` now rejects `wrong_workspace` (user is not a member of the requested workspace) with 403.
+- Login screen shows the factory name/slug of the URL. Wrong-workspace shows an "Access denied" screen with sign-out.
+- Admin-only in-app team management: invite (creates Supabase user with email_confirm=True), change role, reset password, remove member.
+- CLI `scripts/seed_factory.py --company X --slug y --admin-email … --admin-password … --admin-name …` provisions a company + first admin idempotently.
+
+## Backlog (updated)
+
+### P0 (deferred)
+- Email verification/welcome flow for admin accounts on first login (skipped this pass; admins currently created with email_confirm=True).
+- Refactor `App.js` into modular files (`components/EmployeeModal.js`, `pages/*`).
+
+### P1
+- Notifications to admins (in-app + email) for team events (member added/removed, role change), report uploads flagged as sensitive.
+- Employee photo + Aadhar/PAN document upload via `employee-photos` Supabase bucket + signed URLs.
+- Attendance calendar & absence history per employee.
+
+### P2
+- Custom-domain routing docs (AWS + GoDaddy wildcard DNS for `*.manage.zreports.com`) and TLS via Emergent deploy.
+- Audit log for salary/document/permission changes.
+- Configurable report tags and role permission editor.
