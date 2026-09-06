@@ -478,12 +478,12 @@ api.delete("/reports/tags/:tagId", async (req, res) => {
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
   const { data: tag } = await sb.from("report_tags").select("*").eq("id", req.params.tagId).maybeSingle();
   if (!tag || tag.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Tag not found");
-  const { data: usage } = await sb
+  const { count: usage } = await sb
     .from("reports")
     .select("id", { count: "exact", head: true })
     .eq("company_id", ctx.profile.company_id)
     .eq("tag", tag.name);
-  if (usage && usage.length > 0) return httpErr(res, 409, "Tag is in use by existing reports");
+  if (usage && usage > 0) return httpErr(res, 409, "Tag is in use by existing reports");
   const { error } = await sb.from("report_tags").delete().eq("id", tag.id);
   if (error) return httpErr(res, 500, error.message);
   res.status(204).end();
