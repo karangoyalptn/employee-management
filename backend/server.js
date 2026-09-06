@@ -29,6 +29,7 @@ const ID_DOCS_BUCKET = "employee-id-docs";
 const ALLOWED_ACCESS = ["all", "management", "leadership", "admin"];
 const ALLOWED_ROLES = ["admin", "leadership", "manager", "viewer"];
 const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
+const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ALLOWED_ID_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
@@ -514,8 +515,9 @@ api.post("/reports/upload", upload.single("file"), async (req, res) => {
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
 
-  const { tag, access = "leadership" } = req.body || {};
+  const { tag, access = "leadership", report_date } = req.body || {};
   if (!tag) return httpErr(res, 400, "tag required");
+  if (!report_date || !/^\d{4}-\d{2}-\d{2}$/.test(report_date)) return httpErr(res, 400, "report_date required (YYYY-MM-DD)");
   const { data: tagRow } = await sb
     .from("report_tags")
     .select("id")
@@ -526,12 +528,15 @@ api.post("/reports/upload", upload.single("file"), async (req, res) => {
   if (!ALLOWED_ACCESS.includes(access)) return httpErr(res, 400, `Access must be one of: ${ALLOWED_ACCESS.join(", ")}`);
   if (!req.file) return httpErr(res, 400, "file required");
 
-  const filename = req.file.originalname;
-  const m = FILENAME_RE.exec(filename);
-  if (!m) return httpErr(res, 400, "Filename must match YYYY-MM-DD_ReportName.pdf (letters, digits, spaces, - or _)");
-  const reportDate = m[1];
+  // const filename = req.file.originalname;
+  // const m = FILENAME_RE.exec(filename);
+  // if (!m) return httpErr(res, 400, "Filename must match YYYY-MM-DD_ReportName.pdf (letters, digits, spaces, - or _)");
+  // const reportDate = m[1];
   const buf = req.file.buffer;
   if (buf.slice(0, 4).toString() !== "%PDF") return httpErr(res, 400, "Only PDF files are accepted");
+
+  // Auto-generate filename as: tag-date.pdf
+  const filename = `${tag}-${report_date}.pdf`;
 
   const storagePath = `${ctx.profile.company_id}/${crypto.randomUUID()}_${filename}`;
   const { error: upErr } = await sb.storage.from(REPORTS_BUCKET).upload(storagePath, buf, {
@@ -545,7 +550,7 @@ api.post("/reports/upload", upload.single("file"), async (req, res) => {
     company_id: ctx.profile.company_id,
     name: filename,
     tag,
-    report_date: reportDate,
+    report_date,
     access,
     storage_path: storagePath,
     uploaded_by: ctx.profile.full_name,
