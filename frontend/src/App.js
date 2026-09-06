@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "@/App.css";
 import {
   Bell, ChevronDown, FileText, Filter, LayoutDashboard, LogOut, Menu, Pencil, Plus,
@@ -116,8 +116,11 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = () => api.listAbsences(employee.id).then(setItems).catch(() => setItems([]));
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [employee.id]);
+  const load = useCallback(() => {
+    api.listAbsences(employee.id).then(setItems).catch(() => setItems([]));
+  }, [employee.id]);
+
+  useEffect(() => { load(); }, [load]);
 
   const add = async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return setErr("Date must be YYYY-MM-DD");
