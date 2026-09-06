@@ -28,8 +28,7 @@ const PHOTOS_BUCKET = "employee-photos";
 const ID_DOCS_BUCKET = "employee-id-docs";
 const ALLOWED_ACCESS = ["all", "management", "leadership", "admin"];
 const ALLOWED_ROLES = ["admin", "leadership", "manager", "viewer"];
-const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
-const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
+// const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ALLOWED_ID_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
