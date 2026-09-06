@@ -342,15 +342,15 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
 function ReportUploadModal({ onClose, onSubmit, tags, accessLevels, uploading }) {
   const [file, setFile] = useState(null);
   const [tag, setTag] = useState(tags[0] || "");
+  const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
   const [access, setAccess] = useState("leadership");
   const [err, setErr] = useState("");
   const inputRef = useRef();
   const submit = async () => {
     if (!file) return setErr("Please choose a PDF file.");
-    if (!/^\d{4}-\d{2}-\d{2}_[A-Za-z0-9][A-Za-z0-9 _\-]{1,80}\.pdf$/.test(file.name))
-      return setErr("Filename must be YYYY-MM-DD_ReportName.pdf");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) return setErr("Report date must be in YYYY-MM-DD format");
     setErr("");
-    try { await onSubmit(file, tag, access); }
+    try { await onSubmit(file, tag, reportDate, access); }
     catch (e) { setErr(e.detail || e.message || "Upload failed"); }
   };
   return (
@@ -364,12 +364,15 @@ function ReportUploadModal({ onClose, onSubmit, tags, accessLevels, uploading })
           <div className="upload-icon"><UploadCloud size={19} /></div>
           <div>
             <strong>{file ? file.name : "Choose PDF file"}</strong>
-            <p>Filename must be <b>YYYY-MM-DD_ReportName.pdf</b> · Max 25 MB</p>
+            <p>PDF only · Max 25 MB · Filename will be auto-generated as <b>{tag}-{reportDate}.pdf</b></p>
           </div>
           <input ref={inputRef} data-testid="report-file-input" type="file" accept="application/pdf" style={{ display: "none" }} onChange={(e) => setFile(e.target.files[0])} />
           <button data-testid="report-file-picker-button" className="outline-button" onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}>Browse</button>
         </div>
         <div className="form-grid">
+          <label>Report date *
+            <input data-testid="report-date-input" type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+          </label>
           <label>Tag *
             <select data-testid="report-tag-select" value={tag} onChange={(e) => setTag(e.target.value)}>
               {tags.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -675,9 +678,9 @@ function App() {
     try { await api.deleteEmployee(id); flash("Employee removed"); await refreshEmployees(); }
     catch (e) { alert(e.detail || e.message); }
   };
-  const uploadReport = async (file, tag, access) => {
+  const uploadReport = async (file, tag, reportDate, access) => {
     setUploading(true);
-    try { await api.uploadReport(file, tag, access); setUploadModal(false); flash("Report uploaded"); await refreshReports(); }
+    try { await api.uploadReport(file, tag, reportDate, access); setUploadModal(false); flash("Report uploaded"); await refreshReports(); }
     catch (e) { throw e; }
     finally { setUploading(false); }
   };
@@ -934,9 +937,9 @@ function Reports({ reports, tags, activeTag, setActiveTag, onUpload, onDownload,
       </PageHead>
       <section className="report-intro">
         <div>
-          <span className="eyebrow">FILE NAMING STANDARD</span>
+          <span className="eyebrow">AUTOMATED FILE NAMING</span>
           <h2>Keep every report findable.</h2>
-          <p>Use <b>YYYY-MM-DD_ReportName.pdf</b> when uploading. Tag & access rules are saved with every document.</p>
+          <p>Filenames are auto-generated as <b>Tag-Date.pdf</b> when you upload. Tag & access rules are saved with every document.</p>
         </div>
         <div className="report-rule"><FileText size={20} /><span>PDF only<br /><b>Max 25 MB per file</b></span></div>
       </section>
