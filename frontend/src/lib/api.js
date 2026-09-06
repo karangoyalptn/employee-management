@@ -102,7 +102,7 @@ export const api = {
   uploadEmployeeIdDoc: async (id, file) => uploadFile(`/employees/${id}/id-doc`, file),
   getEmployeeIdDocUrl: (id) => request(`/employees/${id}/id-doc`),
   deleteEmployeeIdDoc: (id) => request(`/employees/${id}/id-doc`, { method: "DELETE" }),
-  uploadReport: async (file, tag, access) => uploadFile("/reports/upload", file, { tag, access }),
+  uploadReport: async (file, tag, reportDate, access) => uploadFile("/reports/upload", file, { tag, report_date: reportDate, access }),
   downloadReport: (id) => request(`/reports/${id}/download`),
   deleteReport: (id) => request(`/reports/${id}`, { method: "DELETE" }),
 };
