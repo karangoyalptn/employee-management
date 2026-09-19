@@ -4,7 +4,7 @@ const BASE = process.env.REACT_APP_BACKEND_URL;
 
 /**
  * Resolve the current workspace slug from the URL.
- * - Production: <slug>.manage.zreports.com  → subdomain
+ * - Production: <slug>.manage.zreports.in  → subdomain
  * - Preview / dev fallback: ?w=<slug>       → query param (persisted to localStorage)
  * Returns null if none found.
  */
