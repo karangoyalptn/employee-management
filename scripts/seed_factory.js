@@ -85,7 +85,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { autoR
   }
 
   console.log(`\nDone.`);
-  console.log(`  Workspace URL (later): https://${slug}.manage.zreports.com`);
+  console.log(`  Workspace URL (later): https://${slug}.manage.zreports.in`);
   console.log(`  Preview fallback:      ?w=${slug}`);
   console.log(`  Login:                 ${args.admin_email}`);
 })().catch((e) => { console.error(e); process.exit(1); });
