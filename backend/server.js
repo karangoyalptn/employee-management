@@ -1,17 +1,23 @@
 // ZReports Factory OS — Node/Express backend
-// Uses Supabase for Auth verification, Postgres tables (via PostgREST), and Storage.
+// Uses Supabase for Auth verification, Postgres tables (via PostgREST), and S3 for reports.
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, CopyObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
   CORS_ORIGINS = "*",
   PORT = 8001,
+  AWS_REGION = "us-east-1",
+  AWS_ACCESS_KEY_ID,
+  AWS_SECRET_ACCESS_KEY,
+  S3_REPORTS_BUCKET = "zreports-documents",
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -19,31 +25,26 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   process.exit(1);
 }
 
+if (!AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY) {
+  console.error("Missing AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY in env");
+  process.exit(1);
+}
+
 const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-const REPORTS_BUCKET = "reports";
-const PHOTOS_BUCKET = "employee-photos";
-const ID_DOCS_BUCKET = "employee-id-docs";
-const ALLOWED_ACCESS = ["all", "management", "leadership", "admin"];
+const s3Client = new S3Client({
+  region: AWS_REGION,
+  credentials: {
+    accessKeyId: AWS_ACCESS_KEY_ID,
+    secretAccessKey: AWS_SECRET_ACCESS_KEY,
+  },
+});
+
 const ALLOWED_ROLES = ["admin", "leadership", "manager", "viewer"];
-// const FILENAME_RE = /^(\d{4}-\d{2}-\d{2})_([A-Za-z0-9][A-Za-z0-9 _\-]{1,80})\.pdf$/;
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ALLOWED_ID_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
-
-// Ensure storage buckets exist (best-effort)
-(async () => {
-  try {
-    const { data: buckets } = await sb.storage.listBuckets();
-    const names = new Set((buckets || []).map((b) => b.name));
-    if (!names.has(REPORTS_BUCKET)) await sb.storage.createBucket(REPORTS_BUCKET, { public: false });
-    if (!names.has(PHOTOS_BUCKET)) await sb.storage.createBucket(PHOTOS_BUCKET, { public: true });
-    if (!names.has(ID_DOCS_BUCKET)) await sb.storage.createBucket(ID_DOCS_BUCKET, { public: false });
-  } catch (e) {
-    console.warn("[startup] bucket bootstrap:", e.message);
-  }
-})();
 
 const app = express();
 app.use(cors({ origin: CORS_ORIGINS === "*" ? true : CORS_ORIGINS.split(",") }));
@@ -87,12 +88,6 @@ async function currentProfile(req) {
 
 const requireRole = (profile, allowed) => allowed.includes(profile.role);
 const canSeeSalary = (role) => role === "admin" || role === "leadership";
-const accessibleLevels = (role) => {
-  if (role === "admin") return ["all", "management", "leadership", "admin"];
-  if (role === "leadership") return ["all", "management", "leadership"];
-  if (role === "manager") return ["all", "management"];
-  return ["all"];
-};
 
 const serializeEmployee = (e, role) => ({
   id: e.id,
@@ -103,7 +98,6 @@ const serializeEmployee = (e, role) => ({
   salary: canSeeSalary(role) && e.salary != null ? Number(e.salary) : null,
   aadhar_last4: e.aadhar_last4,
   pan_last4: e.pan_last4,
-  photo_url: e.photo_url,
   has_id_doc: !!e.id_doc_path,
 });
 
@@ -250,7 +244,6 @@ api.post("/employees", async (req, res) => {
     salary: salaryNum,
     aadhar_last4: b.aadhar_last4 || null,
     pan_last4: b.pan_last4 || null,
-    photo_url: b.photo_url || null,
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -274,7 +267,6 @@ api.patch("/employees/:id", async (req, res) => {
     shift: b.shift ?? existing.shift,
     aadhar_last4: b.aadhar_last4 ?? existing.aadhar_last4,
     pan_last4: b.pan_last4 ?? existing.pan_last4,
-    photo_url: b.photo_url ?? existing.photo_url,
     updated_at: nowIso(),
   };
   if (canSeeSalary(ctx.profile.role) && b.salary != null) {
@@ -293,6 +285,29 @@ api.delete("/employees/:id", async (req, res) => {
   const { id } = req.params;
   const { data: existing } = await sb.from("employees").select("*").eq("id", id).maybeSingle();
   if (!existing || existing.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Employee not found");
+
+  // Delete all S3 files for this employee (photo and ID doc)
+  try {
+    const prefix = `${existing.company_id}/employees/${id}/`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const s3Files = await s3Client.send(listCommand);
+
+    if (s3Files.Contents && s3Files.Contents.length > 0) {
+      for (const file of s3Files.Contents) {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_REPORTS_BUCKET,
+          Key: file.Key,
+        })).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to delete S3 files for employee:", e.message);
+  }
+
+  // Delete absences and employee record
   await sb.from("absences").delete().eq("employee_id", id);
   const { error } = await sb.from("employees").delete().eq("id", id);
   if (error) return httpErr(res, 500, error.message);
@@ -319,23 +334,43 @@ api.post("/employees/:id/photo", uploadPhoto.single("file"), async (req, res) =>
   if (!emp) return httpErr(res, 404, "Employee not found");
 
   const ext = (req.file.originalname.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
-  const path = `${ctx.profile.company_id}/${emp.id}/${crypto.randomUUID()}.${ext}`;
-  const { error: upErr } = await sb.storage.from(PHOTOS_BUCKET).upload(path, req.file.buffer, {
-    contentType: req.file.mimetype, upsert: false,
-  });
-  if (upErr) return httpErr(res, 500, `storage: ${upErr.message}`);
-  const { data: pub } = sb.storage.from(PHOTOS_BUCKET).getPublicUrl(path);
-  const publicUrl = pub.publicUrl;
+  const s3Path = `${ctx.profile.company_id}/employees/${emp.id}/photo.${ext}`;
 
-  // best-effort delete of previous photo
-  if (emp.photo_url && emp.photo_url.includes(`/${PHOTOS_BUCKET}/`)) {
-    const prev = emp.photo_url.split(`/${PHOTOS_BUCKET}/`)[1];
-    if (prev) await sb.storage.from(PHOTOS_BUCKET).remove([prev]).catch(() => {});
+  try {
+    // Delete old photos with different extensions (best-effort)
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/photo.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const existingFiles = await s3Client.send(listCommand);
+    if (existingFiles.Contents) {
+      for (const file of existingFiles.Contents) {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_REPORTS_BUCKET,
+          Key: file.Key,
+        })).catch(() => {});
+      }
+    }
+
+    // Upload to S3
+    await s3Client.send(new PutObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: s3Path,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype,
+      Metadata: {
+        employee_id: emp.id,
+        company_id: ctx.profile.company_id,
+        uploaded_by: ctx.profile.full_name,
+        uploaded_at: new Date().toISOString(),
+      },
+    }));
+
+    res.status(201).json({ success: true });
+  } catch (error) {
+    return httpErr(res, 500, `S3 upload: ${error.message}`);
   }
-
-  const { error: uErr } = await sb.from("employees").update({ photo_url: publicUrl, updated_at: nowIso() }).eq("id", emp.id);
-  if (uErr) return httpErr(res, 500, uErr.message);
-  res.status(201).json({ photo_url: publicUrl });
 });
 
 api.delete("/employees/:id/photo", async (req, res) => {
@@ -344,12 +379,65 @@ api.delete("/employees/:id/photo", async (req, res) => {
   if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
   const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
   if (!emp) return httpErr(res, 404, "Employee not found");
-  if (emp.photo_url && emp.photo_url.includes(`/${PHOTOS_BUCKET}/`)) {
-    const prev = emp.photo_url.split(`/${PHOTOS_BUCKET}/`)[1];
-    if (prev) await sb.storage.from(PHOTOS_BUCKET).remove([prev]).catch(() => {});
+
+  try {
+    // List and delete all photo files for this employee
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/photo.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const existingFiles = await s3Client.send(listCommand);
+
+    if (existingFiles.Contents && existingFiles.Contents.length > 0) {
+      for (const file of existingFiles.Contents) {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_REPORTS_BUCKET,
+          Key: file.Key,
+        })).catch(() => {});
+      }
+    }
+
+    res.status(204).end();
+  } catch (error) {
+    return httpErr(res, 500, `S3 delete: ${error.message}`);
   }
-  await sb.from("employees").update({ photo_url: null, updated_at: nowIso() }).eq("id", emp.id);
-  res.status(204).end();
+});
+
+// Get signed URL for photo
+api.get("/employees/:id/photo-url", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
+  if (!emp) return httpErr(res, 404, "Employee not found");
+
+  try {
+    // List objects with photo prefix to find the file
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/photo.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+      MaxKeys: 1,
+    });
+    const result = await s3Client.send(listCommand);
+
+    if (!result.Contents || result.Contents.length === 0) {
+      return httpErr(res, 404, "Photo not found");
+    }
+
+    const photoKey = result.Contents[0].Key;
+    const signedUrl = await getSignedUrl(
+      s3Client,
+      new GetObjectCommand({
+        Bucket: S3_REPORTS_BUCKET,
+        Key: photoKey,
+      }),
+      { expiresIn: 3600 } // 1 hour
+    );
+    res.json({ url: signedUrl });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
 api.post("/employees/:id/id-doc", uploadIdDoc.single("file"), async (req, res) => {
@@ -362,15 +450,43 @@ api.post("/employees/:id/id-doc", uploadIdDoc.single("file"), async (req, res) =
   if (!emp) return httpErr(res, 404, "Employee not found");
 
   const ext = (req.file.originalname.split(".").pop() || "pdf").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "bin";
-  const path = `${ctx.profile.company_id}/${emp.id}/${crypto.randomUUID()}.${ext}`;
-  const { error: upErr } = await sb.storage.from(ID_DOCS_BUCKET).upload(path, req.file.buffer, {
-    contentType: req.file.mimetype, upsert: false,
-  });
-  if (upErr) return httpErr(res, 500, `storage: ${upErr.message}`);
+  const s3Path = `${ctx.profile.company_id}/employees/${emp.id}/id-doc.${ext}`;
 
-  if (emp.id_doc_path) await sb.storage.from(ID_DOCS_BUCKET).remove([emp.id_doc_path]).catch(() => {});
-  await sb.from("employees").update({ id_doc_path: path, updated_at: nowIso() }).eq("id", emp.id);
-  res.status(201).json({ has_id_doc: true });
+  try {
+    // Delete old ID docs with different extensions (best-effort)
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/id-doc.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const existingFiles = await s3Client.send(listCommand);
+    if (existingFiles.Contents) {
+      for (const file of existingFiles.Contents) {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_REPORTS_BUCKET,
+          Key: file.Key,
+        })).catch(() => {});
+      }
+    }
+
+    // Upload to S3
+    await s3Client.send(new PutObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: s3Path,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype,
+      Metadata: {
+        employee_id: emp.id,
+        company_id: ctx.profile.company_id,
+        uploaded_by: ctx.profile.full_name,
+        uploaded_at: new Date().toISOString(),
+      },
+    }));
+
+    res.status(201).json({ success: true });
+  } catch (error) {
+    return httpErr(res, 500, `S3 upload: ${error.message}`);
+  }
 });
 
 api.get("/employees/:id/id-doc", async (req, res) => {
@@ -379,21 +495,65 @@ api.get("/employees/:id/id-doc", async (req, res) => {
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "ID docs viewable only by Admin/Leadership");
   const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
   if (!emp) return httpErr(res, 404, "Employee not found");
-  if (!emp.id_doc_path) return httpErr(res, 404, "No ID doc uploaded");
-  const { data, error } = await sb.storage.from(ID_DOCS_BUCKET).createSignedUrl(emp.id_doc_path, 300);
-  if (error) return httpErr(res, 500, error.message);
-  res.json({ url: data.signedUrl });
+
+  try {
+    // List objects with id-doc prefix to find the file
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/id-doc.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+      MaxKeys: 1,
+    });
+    const result = await s3Client.send(listCommand);
+
+    if (!result.Contents || result.Contents.length === 0) {
+      return httpErr(res, 404, "Document not found");
+    }
+
+    const docKey = result.Contents[0].Key;
+    const signedUrl = await getSignedUrl(
+      s3Client,
+      new GetObjectCommand({
+        Bucket: S3_REPORTS_BUCKET,
+        Key: docKey,
+      }),
+      { expiresIn: 3600 } // 1 hour
+    );
+    res.json({ url: signedUrl });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
 api.delete("/employees/:id/id-doc", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
   const emp = await loadEmployeeInWorkspace(req.params.id, ctx.profile.company_id);
   if (!emp) return httpErr(res, 404, "Employee not found");
-  if (emp.id_doc_path) await sb.storage.from(ID_DOCS_BUCKET).remove([emp.id_doc_path]).catch(() => {});
-  await sb.from("employees").update({ id_doc_path: null, updated_at: nowIso() }).eq("id", emp.id);
-  res.status(204).end();
+
+  try {
+    // List and delete all ID doc files for this employee
+    const prefix = `${ctx.profile.company_id}/employees/${emp.id}/id-doc.`;
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const existingFiles = await s3Client.send(listCommand);
+
+    if (existingFiles.Contents && existingFiles.Contents.length > 0) {
+      for (const file of existingFiles.Contents) {
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_REPORTS_BUCKET,
+          Key: file.Key,
+        })).catch(() => {});
+      }
+    }
+
+    res.status(204).end();
+  } catch (error) {
+    return httpErr(res, 500, `S3 delete: ${error.message}`);
+  }
 });
 
 // ---------- Absences ----------
@@ -447,66 +607,250 @@ api.delete("/absences/:absenceId", async (req, res) => {
   res.status(204).end();
 });
 
-// ---------- Report Tags (workspace-scoped) ----------
+// ---------- Report Tags (S3-based) ----------
 api.get("/reports/tags", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  const { data, error } = await sb
-    .from("report_tags")
-    .select("id,name")
-    .eq("company_id", ctx.profile.company_id)
-    .order("name", { ascending: true });
-  if (error) return httpErr(res, 500, error.message);
-  res.json({ tags: data.map((t) => t.name), tag_rows: data, access_levels: ALLOWED_ACCESS });
+
+  try {
+    const command = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: `${ctx.profile.company_id}/`,
+      Delimiter: "/",
+    });
+    const response = await s3Client.send(command);
+
+    const tags = (response.CommonPrefixes || [])
+      .map((prefix) => {
+        const parts = prefix.Prefix.split("/");
+        return parts[1];
+      })
+      .filter(Boolean)
+      .sort();
+
+    res.json({ tags });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
 api.post("/reports/tags", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+
   const name = String(req.body?.name || "").trim();
   if (name.length < 2 || name.length > 60) return httpErr(res, 400, "name must be 2-60 characters");
-  const row = { id: crypto.randomUUID(), company_id: ctx.profile.company_id, name, created_at: nowIso() };
-  const { data, error } = await sb.from("report_tags").insert(row).select().single();
-  if (error) return httpErr(res, error.code === "23505" ? 409 : 500, error.message);
-  res.status(201).json(data);
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return httpErr(res, 400, "tag must contain only letters, numbers, hyphens, underscores");
+
+  try {
+    // Check if tag already exists
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: `${ctx.profile.company_id}/${name}/`,
+      MaxKeys: 1,
+    });
+    const existing = await s3Client.send(listCommand);
+
+    if (existing.KeyCount > 0) {
+      return httpErr(res, 409, "Tag already exists");
+    }
+
+    // Create the folder by uploading a placeholder file
+    const placeholderKey = `${ctx.profile.company_id}/${name}/.placeholder`;
+    const putCommand = new PutObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: placeholderKey,
+      Body: "",
+    });
+    await s3Client.send(putCommand);
+
+    res.status(201).json({ name });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
-api.delete("/reports/tags/:tagId", async (req, res) => {
+api.put("/reports/tags/:tagName", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
-  const { data: tag } = await sb.from("report_tags").select("*").eq("id", req.params.tagId).maybeSingle();
-  if (!tag || tag.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Tag not found");
-  const { count: usage } = await sb
-    .from("reports")
-    .select("id", { count: "exact", head: true })
-    .eq("company_id", ctx.profile.company_id)
-    .eq("tag", tag.name);
-  if (usage && usage > 0) return httpErr(res, 409, "Tag is in use by existing reports");
-  const { error } = await sb.from("report_tags").delete().eq("id", tag.id);
-  if (error) return httpErr(res, 500, error.message);
-  res.status(204).end();
+
+  const oldName = req.params.tagName;
+  const newName = String(req.body?.name || "").trim();
+
+  if (newName.length < 2 || newName.length > 60) return httpErr(res, 400, "name must be 2-60 characters");
+  if (!/^[a-zA-Z0-9_-]+$/.test(newName)) return httpErr(res, 400, "tag must contain only letters, numbers, hyphens, underscores");
+
+  // If names are the same, nothing to do
+  if (oldName === newName) {
+    return res.json({ name: newName });
+  }
+
+  try {
+    const oldPrefix = `${ctx.profile.company_id}/${oldName}/`;
+    const newPrefix = `${ctx.profile.company_id}/${newName}/`;
+
+    // List all objects under old tag
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: oldPrefix,
+    });
+    const response = await s3Client.send(listCommand);
+
+    if (!response.Contents || response.Contents.length === 0) {
+      return httpErr(res, 404, "Tag not found");
+    }
+
+    // Copy all files to new location
+    for (const obj of response.Contents) {
+      const oldKey = obj.Key;
+      const relativePath = oldKey.substring(oldPrefix.length);
+      const newKey = newPrefix + relativePath;
+
+      const copyCommand = new CopyObjectCommand({
+        Bucket: S3_REPORTS_BUCKET,
+        CopySource: `${S3_REPORTS_BUCKET}/${oldKey}`,
+        Key: newKey,
+      });
+      await s3Client.send(copyCommand);
+    }
+
+    // Delete old files
+    const deleteCommand = new DeleteObjectsCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Delete: {
+        Objects: response.Contents.map((obj) => ({ Key: obj.Key })),
+      },
+    });
+    await s3Client.send(deleteCommand);
+
+    res.json({ name: newName });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
-// ---------- Reports ----------
+api.delete("/reports/tags/:tagName", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+
+  const tagName = req.params.tagName;
+
+  try {
+    const prefix = `${ctx.profile.company_id}/${tagName}/`;
+
+    // List all objects under this tag
+    const listCommand = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const response = await s3Client.send(listCommand);
+
+    if (!response.Contents || response.Contents.length === 0) {
+      return httpErr(res, 404, "Tag not found");
+    }
+
+    // Check if there are any PDF files (not just placeholder)
+    const hasFiles = response.Contents.some((obj) => obj.Key.endsWith(".pdf"));
+    if (hasFiles) {
+      return httpErr(res, 409, "Cannot delete tag with existing reports");
+    }
+
+    // Delete placeholder file
+    const deleteCommand = new DeleteObjectsCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Delete: {
+        Objects: response.Contents.map((obj) => ({ Key: obj.Key })),
+      },
+    });
+    await s3Client.send(deleteCommand);
+
+    res.status(204).end();
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
+});
+
+// ---------- Reports (S3-based) ----------
 
 api.get("/reports", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  const levels = accessibleLevels(ctx.profile.role);
-  let q = sb.from("reports").select("*")
-    .eq("company_id", ctx.profile.company_id)
-    .in("access", levels)
-    .order("report_date", { ascending: false })
-    .order("created_at", { ascending: false });
-  if (req.query.tag) q = q.eq("tag", req.query.tag);
-  const { data, error } = await q;
-  if (error) return httpErr(res, 500, error.message);
-  res.json(data.map((r) => ({
-    id: r.id, name: r.name, tag: r.tag, report_date: r.report_date,
-    access: r.access, uploaded_by: r.uploaded_by, storage_path: r.storage_path,
-  })));
+
+  const { tag, year } = req.query;
+  if (!tag) return httpErr(res, 400, "tag parameter required");
+
+  try {
+    let prefix = `${ctx.profile.company_id}/${tag}/`;
+    if (year) {
+      prefix += `${year}/`;
+    }
+
+    const command = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+    });
+    const response = await s3Client.send(command);
+
+    const reports = (response.Contents || [])
+      .filter((obj) => obj.Key.endsWith(".pdf"))
+      .map((obj) => {
+        const parts = obj.Key.split("/");
+        const filename = parts[parts.length - 1];
+        const fileYear = parts[2];
+        const reportDate = filename.replace(".pdf", "");
+
+        return {
+          id: obj.Key,
+          name: filename,
+          tag,
+          report_date: reportDate,
+          year: fileYear,
+          storage_path: obj.Key,
+          size: obj.Size,
+          last_modified: obj.LastModified,
+        };
+      })
+      .sort((a, b) => b.report_date.localeCompare(a.report_date));
+
+    res.json(reports);
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
+});
+
+api.get("/reports/years", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+
+  const { tag } = req.query;
+  if (!tag) return httpErr(res, 400, "tag parameter required");
+
+  try {
+    const prefix = `${ctx.profile.company_id}/${tag}/`;
+
+    const command = new ListObjectsV2Command({
+      Bucket: S3_REPORTS_BUCKET,
+      Prefix: prefix,
+      Delimiter: "/",
+    });
+    const response = await s3Client.send(command);
+
+    const years = (response.CommonPrefixes || [])
+      .map((prefix) => {
+        const parts = prefix.Prefix.split("/");
+        return parts[2];
+      })
+      .filter(Boolean)
+      .sort()
+      .reverse();
+
+    res.json({ years });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
 api.post("/reports/upload", upload.single("file"), async (req, res) => {
@@ -514,77 +858,92 @@ api.post("/reports/upload", upload.single("file"), async (req, res) => {
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
 
-  const { tag, access = "leadership", report_date } = req.body || {};
+  const { tag, report_date } = req.body || {};
   if (!tag) return httpErr(res, 400, "tag required");
   if (!report_date || !/^\d{4}-\d{2}-\d{2}$/.test(report_date)) return httpErr(res, 400, "report_date required (YYYY-MM-DD)");
-  const { data: tagRow } = await sb
-    .from("report_tags")
-    .select("id")
-    .eq("company_id", ctx.profile.company_id)
-    .eq("name", tag)
-    .maybeSingle();
-  if (!tagRow) return httpErr(res, 400, `Tag '${tag}' not found in this workspace`);
-  if (!ALLOWED_ACCESS.includes(access)) return httpErr(res, 400, `Access must be one of: ${ALLOWED_ACCESS.join(", ")}`);
   if (!req.file) return httpErr(res, 400, "file required");
 
-  // const filename = req.file.originalname;
-  // const m = FILENAME_RE.exec(filename);
-  // if (!m) return httpErr(res, 400, "Filename must match YYYY-MM-DD_ReportName.pdf (letters, digits, spaces, - or _)");
-  // const reportDate = m[1];
   const buf = req.file.buffer;
   if (buf.slice(0, 4).toString() !== "%PDF") return httpErr(res, 400, "Only PDF files are accepted");
 
-  // Auto-generate filename as: tag-date.pdf
-  const filename = `${tag}-${report_date}.pdf`;
+  // Filename is just the date
+  const filename = `${report_date}.pdf`;
+  const year = report_date.split("-")[0];
+  const storagePath = `${ctx.profile.company_id}/${tag}/${year}/${filename}`;
 
-  const storagePath = `${ctx.profile.company_id}/${crypto.randomUUID()}_${filename}`;
-  const { error: upErr } = await sb.storage.from(REPORTS_BUCKET).upload(storagePath, buf, {
-    contentType: "application/pdf",
-    upsert: false,
-  });
-  if (upErr) return httpErr(res, 500, `storage: ${upErr.message}`);
+  try {
+    const putCommand = new PutObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: storagePath,
+      Body: buf,
+      ContentType: "application/pdf",
+      Metadata: {
+        uploaded_by: ctx.profile.full_name,
+        uploaded_by_id: ctx.profile.id,
+        company_id: ctx.profile.company_id,
+      },
+    });
+    await s3Client.send(putCommand);
 
-  const row = {
-    id: crypto.randomUUID(),
-    company_id: ctx.profile.company_id,
-    name: filename,
-    tag,
-    report_date,
-    access,
-    storage_path: storagePath,
-    uploaded_by: ctx.profile.full_name,
-    uploaded_by_id: ctx.profile.id,
-    created_at: nowIso(),
-  };
-  const { data, error } = await sb.from("reports").insert(row).select().single();
-  if (error) return httpErr(res, 500, error.message);
-  res.status(201).json({
-    id: data.id, name: data.name, tag: data.tag, report_date: data.report_date,
-    access: data.access, uploaded_by: data.uploaded_by, storage_path: data.storage_path,
-  });
+    res.status(201).json({
+      id: storagePath,
+      name: filename,
+      tag,
+      report_date,
+      year,
+      storage_path: storagePath,
+    });
+  } catch (error) {
+    return httpErr(res, 500, `S3 upload: ${error.message}`);
+  }
 });
 
-api.get("/reports/:id/download", async (req, res) => {
+api.get("/reports/*/download", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  const { data: r } = await sb.from("reports").select("*").eq("id", req.params.id).maybeSingle();
-  if (!r || r.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Report not found");
-  if (!accessibleLevels(ctx.profile.role).includes(r.access)) return httpErr(res, 403, "You do not have access to this report");
-  const { data, error } = await sb.storage.from(REPORTS_BUCKET).createSignedUrl(r.storage_path, 300);
-  if (error) return httpErr(res, 500, error.message);
-  res.json({ url: data.signedUrl });
+
+  const s3Key = decodeURIComponent(req.params[0]);
+
+  // Verify belongs to this company
+  if (!s3Key.startsWith(`${ctx.profile.company_id}/`)) {
+    return httpErr(res, 403, "Access denied");
+  }
+
+  try {
+    const command = new GetObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: s3Key,
+    });
+    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+    res.json({ url: signedUrl });
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
-api.delete("/reports/:id", async (req, res) => {
+api.delete("/reports/*", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
   if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
-  const { data: r } = await sb.from("reports").select("*").eq("id", req.params.id).maybeSingle();
-  if (!r || r.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Report not found");
-  await sb.storage.from(REPORTS_BUCKET).remove([r.storage_path]).catch(() => {});
-  const { error } = await sb.from("reports").delete().eq("id", req.params.id);
-  if (error) return httpErr(res, 500, error.message);
-  res.status(204).end();
+
+  const s3Key = decodeURIComponent(req.params[0]);
+
+  // Verify belongs to this company
+  if (!s3Key.startsWith(`${ctx.profile.company_id}/`)) {
+    return httpErr(res, 403, "Access denied");
+  }
+
+  try {
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: S3_REPORTS_BUCKET,
+      Key: s3Key,
+    });
+    await s3Client.send(deleteCommand);
+
+    res.status(204).end();
+  } catch (error) {
+    return httpErr(res, 500, `S3 error: ${error.message}`);
+  }
 });
 
 // multer / global error
