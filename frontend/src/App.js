@@ -102,7 +102,7 @@ function WorkspaceMissing({ slug }) {
         <h2 style={{ font: "800 34px 'Barlow Condensed'", margin: "12px 0 8px", letterSpacing: "-.4px" }}>Workspace not found</h2>
         <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6 }}>
           {slug ? <>The workspace <b style={{ color: "#fff" }}>{slug}</b> does not exist yet.</> : <>No workspace was specified.</>}
-          <br />Ask your account owner to provision it, then use its factory URL like <code style={{ color: "#a8c0e0" }}>your-factory.manage.zreports.com</code>.
+          <br />Ask your account owner to provision it, then use its factory URL like <code style={{ color: "#a8c0e0" }}>your-factory.manage.zreports.in</code>.
         </p>
       </div>
     </main>
