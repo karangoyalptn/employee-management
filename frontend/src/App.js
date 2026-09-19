@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "@/App.css";
 import {
-  Bell, ChevronDown, FileText, Filter, LayoutDashboard, LogOut, Menu, Pencil, Plus,
+  ChevronDown, FileText, Filter, LayoutDashboard, LogOut, Menu, Pencil, Plus,
   Search, Settings, ShieldCheck, Trash2, Users, X, UploadCloud, Download, UserCog, KeyRound,
-  CalendarDays,
+  CalendarDays, Check, Eye,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { api, getWorkspaceSlug } from "@/lib/api";
@@ -13,7 +13,6 @@ const avatarImages = [
 ];
 
 const ROLE_LABEL = { admin: "Admin", leadership: "Leadership", manager: "Manager", viewer: "Viewer" };
-const ACCESS_LABEL = { all: "All employees", management: "Managers+", leadership: "Leadership+", admin: "Admin only" };
 
 const canManageEmployees = (r) => ["admin", "leadership", "manager"].includes(r);
 const canDeleteEmployees = (r) => ["admin", "leadership"].includes(r);
@@ -21,6 +20,25 @@ const canUploadReports = (r) => ["admin", "leadership"].includes(r);
 const canSeeSalary = (r) => ["admin", "leadership"].includes(r);
 
 const initialsOf = (name) => (name || "").split(" ").filter(Boolean).map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+
+// Component to display employee photo with signed URL from S3
+function EmployeeAvatar({ employee, size = 36 }) {
+  const [photoUrl, setPhotoUrl] = useState(null);
+
+  useEffect(() => {
+    if (employee?.id) {
+      api.getEmployeePhotoUrl(employee.id)
+        .then(({ url }) => setPhotoUrl(url))
+        .catch(() => setPhotoUrl(null));
+    }
+  }, [employee?.id]);
+
+  return (
+    <div className="avatar" style={size ? { width: size, height: size } : {}}>
+      {photoUrl ? <img src={photoUrl} alt="" /> : initialsOf(employee?.name || "")}
+    </div>
+  );
+}
 
 function LoginScreen({ workspace, onSignedIn }) {
   const [email, setEmail] = useState("");
@@ -115,6 +133,8 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
   const [reason, setReason] = useState("");
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(() => {
     api.listAbsences(employee.id).then(setItems).catch(() => setItems([]));
@@ -129,10 +149,18 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
     catch (e) { setErr(e.detail || e.message); }
     finally { setSaving(false); }
   };
-  const remove = async (a) => {
-    if (!window.confirm(`Remove absence on ${a.absence_date}?`)) return;
-    try { await api.deleteAbsence(a.id); await load(); }
-    catch (e) { alert(e.detail || e.message); }
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      await api.deleteAbsence(deleteConfirm.id);
+      setDeleteConfirm(null);
+      await load();
+    }
+    catch (e) {
+      setErr(e.detail || e.message);
+      setDeleteConfirm(null);
+    }
+    finally { setDeleting(false); }
   };
 
   return (
@@ -150,7 +178,7 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
         {canEdit && (
           <div className="form-grid" style={{ marginBottom: 6 }}>
             <label>Absence date *
-              <input data-testid="absence-date-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <input data-testid="absence-date-input" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ colorScheme: "dark" }} />
             </label>
             <label>Reason (optional)
               <input data-testid="absence-reason-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Sick leave" />
@@ -184,7 +212,7 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
                   <td>{a.created_at ? new Date(a.created_at).toLocaleDateString("en-IN") : "—"}</td>
                   {canEdit && (
                     <td>
-                      <button data-testid={`absence-delete-${a.id}-button`} className="icon-button danger" onClick={() => remove(a)}>
+                      <button data-testid={`absence-delete-${a.id}-button`} className="icon-button danger" onClick={() => setDeleteConfirm(a)}>
                         <Trash2 size={15} />
                       </button>
                     </td>
@@ -196,25 +224,69 @@ function AbsenceHistoryModal({ employee, canEdit, onClose }) {
           {items === null && <div className="empty-state">Loading…</div>}
           {items && items.length === 0 && <div className="empty-state" data-testid="absence-empty-state">No absences logged yet.</div>}
         </div>
+        {deleteConfirm && (
+          <div className="modal-backdrop" style={{ zIndex: 1002 }}>
+            <div className="modal" style={{ width: "min(400px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Remove absence?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setDeleteConfirm(null)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 8px" }}>
+                <strong>{deleteConfirm.absence_date}</strong>
+              </p>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                {deleteConfirm.reason ? `Reason: ${deleteConfirm.reason}` : "This absence will be permanently removed."}
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={remove} disabled={deleting}>
+                  {deleting ? "Removing…" : "Remove absence"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function EmployeeModal({ employee, role, onClose, onSave, saving }) {
+function EmployeeModal({ employee, role, onClose, onSave, onRefresh, saving }) {
   const [form, setForm] = useState(
-    employee || { name: "", role: "", gender: "Male", shift: "Day shift", salary: "", aadhar_last4: "", pan_last4: "", photo_url: "" }
+    employee || { name: "", role: "", gender: "Male", shift: "Day shift", salary: "", aadhar_last4: "", pan_last4: "" }
   );
   const [err, setErr] = useState("");
   const [photoFile, setPhotoFile] = useState(null);
   const [idDocFile, setIdDocFile] = useState(null);
-  const [photoPreview, setPhotoPreview] = useState(employee?.photo_url || "");
-  const [hasIdDoc, setHasIdDoc] = useState(!!employee?.has_id_doc);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [hasIdDoc, setHasIdDoc] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [confirmDeletePhoto, setConfirmDeletePhoto] = useState(false);
+  const [confirmDeleteIdDoc, setConfirmDeleteIdDoc] = useState(false);
+  const [deletingPhoto, setDeletingPhoto] = useState(false);
+  const [deletingIdDoc, setDeletingIdDoc] = useState(false);
   const photoRef = useRef();
   const idRef = useRef();
 
   const update = (key, value) => setForm({ ...form, [key]: value });
+
+  // Check for existing photo and ID doc in S3
+  useEffect(() => {
+    if (employee?.id && !photoFile) {
+      // Check for photo
+      api.getEmployeePhotoUrl(employee.id)
+        .then(({ url }) => setPhotoPreview(url))
+        .catch(() => setPhotoPreview(""));
+
+      // Check for ID doc
+      api.getEmployeeIdDocUrl(employee.id)
+        .then(() => setHasIdDoc(true))
+        .catch(() => setHasIdDoc(false));
+    }
+  }, [employee?.id, photoFile]);
 
   const pickPhoto = (f) => {
     if (!f) return;
@@ -240,7 +312,6 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
       role: form.role || null,
       aadhar_last4: (form.aadhar_last4 || "").slice(-4) || null,
       pan_last4: (form.pan_last4 || "").slice(-4) || null,
-      photo_url: form.photo_url || null,
     });
     if (!saved?.id) return;
     // Upload files if any
@@ -249,6 +320,8 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
       try {
         if (photoFile) await api.uploadEmployeePhoto(saved.id, photoFile);
         if (idDocFile) await api.uploadEmployeeIdDoc(saved.id, idDocFile);
+        // Refresh the employee list to show the uploaded documents
+        if (onRefresh) await onRefresh();
       } catch (e) { alert("Employee saved but media upload failed: " + (e.detail || e.message)); }
       finally { setUploadBusy(false); }
     }
@@ -261,15 +334,37 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
   };
   const removePhoto = async () => {
     if (!employee?.id) { setPhotoFile(null); setPhotoPreview(""); return; }
-    if (!window.confirm("Remove photo?")) return;
-    try { await api.deleteEmployeePhoto(employee.id); setPhotoPreview(""); setPhotoFile(null); }
-    catch (e) { alert(e.detail || e.message); }
+    setDeletingPhoto(true);
+    try {
+      await api.deleteEmployeePhoto(employee.id);
+      setPhotoPreview("");
+      setPhotoFile(null);
+      setConfirmDeletePhoto(false);
+      // Refresh the employee list to remove the photo
+      if (onRefresh) await onRefresh();
+    }
+    catch (e) {
+      setErr(e.detail || e.message);
+      setConfirmDeletePhoto(false);
+    }
+    finally { setDeletingPhoto(false); }
   };
   const removeIdDoc = async () => {
     if (!employee?.id) { setIdDocFile(null); return; }
-    if (!window.confirm("Remove ID document?")) return;
-    try { await api.deleteEmployeeIdDoc(employee.id); setHasIdDoc(false); setIdDocFile(null); }
-    catch (e) { alert(e.detail || e.message); }
+    setDeletingIdDoc(true);
+    try {
+      await api.deleteEmployeeIdDoc(employee.id);
+      setHasIdDoc(false);
+      setIdDocFile(null);
+      setConfirmDeleteIdDoc(false);
+      // Refresh the employee list to remove the document
+      if (onRefresh) await onRefresh();
+    }
+    catch (e) {
+      setErr(e.detail || e.message);
+      setConfirmDeleteIdDoc(false);
+    }
+    finally { setDeletingIdDoc(false); }
   };
 
   const canViewIdDoc = role === "admin" || role === "leadership";
@@ -292,7 +387,7 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
               <button data-testid="employee-photo-pick-button" className="outline-button" onClick={() => photoRef.current?.click()}>
                 {photoPreview ? "Change photo" : "Add photo"}
               </button>
-              {photoPreview && <button data-testid="employee-photo-remove-button" className="outline-button" onClick={removePhoto}>Remove</button>}
+              {photoPreview && <button data-testid="employee-photo-remove-button" className="outline-button" onClick={() => employee?.id ? setConfirmDeletePhoto(true) : removePhoto()}>Remove</button>}
             </div>
             <p className="muted" style={{ fontSize: 10, margin: 0 }}>JPEG/PNG/WebP · under 2 MB</p>
           </div>
@@ -327,7 +422,7 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
           <input ref={idRef} data-testid="employee-iddoc-input" type="file" accept="application/pdf,image/jpeg,image/png" style={{ display: "none" }} onChange={(e) => pickIdDoc(e.target.files[0])} />
           <button data-testid="employee-iddoc-pick-button" className="outline-button" onClick={() => idRef.current?.click()}>Choose</button>
           {employee?.id && hasIdDoc && canViewIdDoc && <button data-testid="employee-iddoc-view-button" className="outline-button" onClick={viewIdDoc}>View</button>}
-          {employee?.id && hasIdDoc && <button data-testid="employee-iddoc-remove-button" className="outline-button" onClick={removeIdDoc}>Remove</button>}
+          {employee?.id && hasIdDoc && <button data-testid="employee-iddoc-remove-button" className="outline-button" onClick={() => setConfirmDeleteIdDoc(true)}>Remove</button>}
         </div>
 
         {err && <p data-testid="employee-form-error" style={{ color: "var(--red)", fontSize: 11 }}>{err}</p>}
@@ -337,23 +432,66 @@ function EmployeeModal({ employee, role, onClose, onSave, saving }) {
             {(saving || uploadBusy) ? "Saving…" : "Save employee"} <span>→</span>
           </button>
         </div>
+        {confirmDeletePhoto && (
+          <div className="modal-backdrop" style={{ zIndex: 1002 }}>
+            <div className="modal" style={{ width: "min(380px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Remove photo?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setConfirmDeletePhoto(false)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                The employee photo will be permanently deleted.
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setConfirmDeletePhoto(false)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={removePhoto} disabled={deletingPhoto}>
+                  {deletingPhoto ? "Removing…" : "Remove photo"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {confirmDeleteIdDoc && (
+          <div className="modal-backdrop" style={{ zIndex: 1002 }}>
+            <div className="modal" style={{ width: "min(380px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Remove ID document?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setConfirmDeleteIdDoc(false)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                The identity document will be permanently deleted.
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setConfirmDeleteIdDoc(false)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={removeIdDoc} disabled={deletingIdDoc}>
+                  {deletingIdDoc ? "Removing…" : "Remove document"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ReportUploadModal({ onClose, onSubmit, tags, accessLevels, uploading }) {
+function ReportUploadModal({ onClose, onSubmit, tags, uploading }) {
   const [file, setFile] = useState(null);
   const [tag, setTag] = useState(tags[0] || "");
   const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
-  const [access, setAccess] = useState("leadership");
   const [err, setErr] = useState("");
   const inputRef = useRef();
   const submit = async () => {
     if (!file) return setErr("Please choose a PDF file.");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) return setErr("Report date must be in YYYY-MM-DD format");
     setErr("");
-    try { await onSubmit(file, tag, reportDate, access); }
+    try { await onSubmit(file, tag, reportDate); }
     catch (e) { setErr(e.detail || e.message || "Upload failed"); }
   };
   return (
@@ -367,23 +505,18 @@ function ReportUploadModal({ onClose, onSubmit, tags, accessLevels, uploading })
           <div className="upload-icon"><UploadCloud size={19} /></div>
           <div>
             <strong>{file ? file.name : "Choose PDF file"}</strong>
-            <p>PDF only · Max 25 MB · Filename will be auto-generated as <b>{tag}-{reportDate}.pdf</b></p>
+            <p>PDF only · Max 25 MB · Filename will be auto-generated as <b>{reportDate}.pdf</b></p>
           </div>
           <input ref={inputRef} data-testid="report-file-input" type="file" accept="application/pdf" style={{ display: "none" }} onChange={(e) => setFile(e.target.files[0])} />
           <button data-testid="report-file-picker-button" className="outline-button" onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}>Browse</button>
         </div>
         <div className="form-grid">
           <label>Report date *
-            <input data-testid="report-date-input" type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+            <input data-testid="report-date-input" type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} style={{ colorScheme: "dark" }} />
           </label>
           <label>Tag *
             <select data-testid="report-tag-select" value={tag} onChange={(e) => setTag(e.target.value)}>
               {tags.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </label>
-          <label>Access level *
-            <select data-testid="report-access-select" value={access} onChange={(e) => setAccess(e.target.value)}>
-              {accessLevels.map((a) => <option key={a} value={a}>{ACCESS_LABEL[a] || a}</option>)}
             </select>
           </label>
         </div>
@@ -444,8 +577,13 @@ function TagsModal({ onClose, onChanged, role }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [renaming, setRenaming] = useState(null);
+  const [newName, setNewName] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
   const canEdit = role === "admin" || role === "leadership";
-  const load = () => api.reportTags().then((d) => setTags(d.tag_rows || [])).catch(() => {});
+  const load = () => api.reportTags().then((d) => setTags(d.tags || [])).catch(() => {});
   useEffect(() => { load(); }, []);
   const add = async () => {
     if (name.trim().length < 2) return setErr("Tag name must be at least 2 characters.");
@@ -454,14 +592,33 @@ function TagsModal({ onClose, onChanged, role }) {
     catch (e) { setErr(e.detail || e.message); }
     finally { setSaving(false); }
   };
-  const remove = async (t) => {
-    if (!window.confirm(`Remove tag "${t.name}"?`)) return;
-    try { await api.deleteTag(t.id); await load(); onChanged?.(); }
-    catch (e) { alert(e.detail || e.message); }
+  const startRename = (tag) => {
+    setRenaming(tag);
+    setNewName(tag);
+  };
+  const doRename = async () => {
+    const trimmed = newName.trim();
+    if (trimmed.length < 2) return setErr("Tag name must be at least 2 characters.");
+    // If name hasn't changed, just cancel edit mode
+    if (trimmed === renaming) {
+      setRenaming(null);
+      return;
+    }
+    setErr(""); setSaving(true);
+    try { await api.renameTag(renaming, trimmed); setRenaming(null); await load(); onChanged?.(); }
+    catch (e) { setErr(e.detail || e.message); }
+    finally { setSaving(false); }
+  };
+  const remove = async () => {
+    setDeleteErr("");
+    setDeleting(true);
+    try { await api.deleteTag(deleteConfirm); setDeleteConfirm(null); await load(); onChanged?.(); }
+    catch (e) { setDeleteErr(e.detail || e.message); }
+    finally { setDeleting(false); }
   };
   return (
     <div className="modal-backdrop">
-      <div className="modal" data-testid="tags-modal" style={{ width: "min(520px, 100%)" }}>
+      <div className="modal" data-testid="tags-modal" style={{ width: "min(560px, 100%)" }}>
         <div className="modal-head">
           <div><span className="eyebrow">REPORT TAGS</span><h2>Manage tags</h2></div>
           <button data-testid="tags-close-button" className="icon-button" onClick={onClose}><X size={18} /></button>
@@ -474,19 +631,66 @@ function TagsModal({ onClose, onChanged, role }) {
         )}
         {err && <p data-testid="tags-error" style={{ color: "var(--red)", fontSize: 11 }}>{err}</p>}
         <div className="table-wrap">
-          <table>
-            <thead><tr><th>Name</th>{canEdit && <th /> }</tr></thead>
+          <table style={{ tableLayout: "fixed", width: 240 }}>
+            <thead><tr><th style={{ width: 120 }}>Name</th>{canEdit && <th style={{ width: 120 }}>Actions</th>}</tr></thead>
             <tbody>
-              {tags.map((t) => (
-                <tr key={t.id} data-testid={`tag-row-${t.id}`}>
-                  <td><span className="report-tag">{t.name}</span></td>
-                  {canEdit && <td><button data-testid={`tag-delete-${t.id}-button`} className="icon-button danger" onClick={() => remove(t)}><Trash2 size={15} /></button></td>}
+              {tags.map((tag) => (
+                <tr key={tag} data-testid={`tag-row-${tag}`}>
+                  <td>
+                    {renaming === tag ? (
+                      <input
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        style={{ background: "#171b23", border: "1px solid #303848", color: "#fff", padding: "6px 8px", width: "100%", boxSizing: "border-box" }}
+                      />
+                    ) : (
+                      <span className="report-tag">{tag}</span>
+                    )}
+                  </td>
+                  {canEdit && (
+                    <td>
+                      {renaming === tag ? (
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button className="icon-button" onClick={doRename} title="Save" style={{ color: "var(--green)" }}><Check size={14} /></button>
+                          <button className="icon-button" onClick={() => setRenaming(null)} title="Cancel"><X size={14} /></button>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button data-testid={`tag-rename-${tag}-button`} className="icon-button" onClick={() => startRename(tag)} title="Rename"><Pencil size={14} /></button>
+                          <button data-testid={`tag-delete-${tag}-button`} className="icon-button danger" onClick={() => setDeleteConfirm(tag)} title="Delete"><Trash2 size={14} /></button>
+                        </div>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
           {tags.length === 0 && <div className="empty-state">No tags yet.</div>}
         </div>
+        {deleteConfirm && (
+          <div className="modal-backdrop" style={{ zIndex: 1001 }}>
+            <div className="modal" style={{ width: "min(400px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Delete tag "{deleteConfirm}"?</h2>
+                </div>
+                <button className="icon-button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                This will permanently delete the tag. The action will fail if reports exist in this tag.
+              </p>
+              {deleteErr && <p style={{ color: "var(--red)", fontSize: 12, background: "rgba(239, 68, 68, 0.1)", padding: "10px", borderRadius: 6, margin: "0 0 16px", lineHeight: 1.6 }}>{deleteErr}</p>}
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => { setDeleteConfirm(null); setDeleteErr(""); }}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={remove} disabled={deleting}>
+                  {deleting ? "Deleting…" : "Delete tag"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -499,6 +703,8 @@ function TeamModal({ onClose, currentUserId }) {
   const [addSaving, setAddSaving] = useState(false);
   const [resetFor, setResetFor] = useState(null);
   const [resetPw, setResetPw] = useState("");
+  const [removeConfirm, setRemoveConfirm] = useState(null);
+  const [removing, setRemoving] = useState(false);
 
   const load = () => api.team().then(setTeam).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -515,10 +721,18 @@ function TeamModal({ onClose, currentUserId }) {
     catch (e) { throw e; }
     finally { setAddSaving(false); }
   };
-  const remove = async (u) => {
-    if (!window.confirm(`Remove ${u.full_name} from this workspace?`)) return;
-    try { await api.removeMember(u.id); await load(); }
-    catch (e) { alert(e.detail || e.message); }
+  const remove = async () => {
+    setRemoving(true);
+    try {
+      await api.removeMember(removeConfirm.id);
+      setRemoveConfirm(null);
+      await load();
+    }
+    catch (e) {
+      alert(e.detail || e.message);
+      setRemoveConfirm(null);
+    }
+    finally { setRemoving(false); }
   };
   const doReset = async () => {
     if (resetPw.length < 8) return alert("Password must be at least 8 characters.");
@@ -563,7 +777,7 @@ function TeamModal({ onClose, currentUserId }) {
                     <div className="row-actions">
                       <button data-testid={`team-reset-${u.id}-button`} className="icon-button" title="Reset password" onClick={() => setResetFor(u)}><KeyRound size={15} /></button>
                       {u.id !== currentUserId && (
-                        <button data-testid={`team-remove-${u.id}-button`} className="icon-button danger" title="Remove member" onClick={() => remove(u)}><Trash2 size={15} /></button>
+                        <button data-testid={`team-remove-${u.id}-button`} className="icon-button danger" title="Remove member" onClick={() => setRemoveConfirm(u)}><Trash2 size={15} /></button>
                       )}
                     </div>
                   </td>
@@ -593,6 +807,107 @@ function TeamModal({ onClose, currentUserId }) {
             </div>
           </div>
         )}
+        {removeConfirm && (
+          <div className="modal-backdrop" style={{ zIndex: 1002 }}>
+            <div className="modal" style={{ width: "min(420px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM REMOVE</span>
+                  <h2>Remove team member?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setRemoveConfirm(null)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 8px" }}>
+                <strong>{removeConfirm.full_name}</strong>
+              </p>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                This will permanently remove <strong>{removeConfirm.email}</strong> from this workspace. They will lose access immediately.
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setRemoveConfirm(null)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={remove} disabled={removing}>
+                  {removing ? "Removing…" : "Remove member"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ onClose, onSuccess }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!currentPassword) return setErr("Current password is required");
+    if (newPassword.length < 8) return setErr("New password must be at least 8 characters");
+    if (newPassword !== confirmPassword) return setErr("New passwords do not match");
+
+    setErr("");
+    setSaving(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      onSuccess();
+    } catch (e) {
+      setErr(e.message || "Failed to change password");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal" style={{ width: "min(440px, 100%)" }}>
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow">SECURITY</span>
+            <h2>Change Password</h2>
+          </div>
+          <button className="icon-button" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="form-grid">
+          <label style={{ gridColumn: "1 / -1" }}>Current Password *
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              placeholder="Enter current password"
+              autoComplete="current-password"
+            />
+          </label>
+          <label style={{ gridColumn: "1 / -1" }}>New Password *
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Min. 8 characters"
+              autoComplete="new-password"
+            />
+          </label>
+          <label style={{ gridColumn: "1 / -1" }}>Confirm New Password *
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter new password"
+              autoComplete="new-password"
+            />
+          </label>
+        </div>
+        {err && <p style={{ color: "var(--red)", fontSize: 11, margin: "10px 0 0" }}>{err}</p>}
+        <div className="modal-actions">
+          <button className="outline-button" onClick={onClose}>Cancel</button>
+          <button className="primary-button" onClick={submit} disabled={saving}>
+            {saving ? "Changing…" : "Change Password"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -610,7 +925,7 @@ function App() {
   const [active, setActive] = useState("Overview");
   const [employees, setEmployees] = useState([]);
   const [reports, setReports] = useState([]);
-  const [tagsMeta, setTagsMeta] = useState({ tags: [], access_levels: [] });
+  const [tagsMeta, setTagsMeta] = useState({ tags: [] });
   const [search, setSearch] = useState("");
   const [shift, setShift] = useState("All shifts");
   const [modal, setModal] = useState(null);
@@ -621,7 +936,15 @@ function App() {
   const [tagsModal, setTagsModal] = useState(false);
   const [absenceFor, setAbsenceFor] = useState(null);
   const [notice, setNotice] = useState("");
-  const [activeTag, setActiveTag] = useState("All reports");
+  const [activeTag, setActiveTag] = useState("");
+  const [activeYear, setActiveYear] = useState(new Date().getFullYear().toString());
+  const [years, setYears] = useState([new Date().getFullYear().toString()]);
+  const [deleteReportConfirm, setDeleteReportConfirm] = useState(null);
+  const [deletingReport, setDeletingReport] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [deleteEmployeeConfirm, setDeleteEmployeeConfirm] = useState(null);
+  const [deletingEmployee, setDeletingEmployee] = useState(false);
 
   // Resolve workspace by slug (public)
   useEffect(() => {
@@ -655,14 +978,41 @@ function App() {
     catch (e) { console.error(e); }
   };
   const refreshReports = async () => {
-    try { setReports(await api.listReports(activeTag === "All reports" ? "" : activeTag)); }
-    catch (e) { console.error(e); }
+    if (!activeTag) return;
+    try { setReports(await api.listReports(activeTag, activeYear)); }
+    catch (e) { console.error(e); setReports([]); }
   };
+  const refreshYears = async () => {
+    if (!activeTag) return;
+    try {
+      const data = await api.getReportYears(activeTag);
+      const yearsList = data.years && data.years.length > 0 ? data.years : [new Date().getFullYear().toString()];
+      setYears(yearsList);
+      // If current year is not in list, set to first year
+      if (!yearsList.includes(activeYear)) {
+        setActiveYear(yearsList[0]);
+      }
+    }
+    catch (e) { console.error(e); setYears([new Date().getFullYear().toString()]); }
+  };
+
   useEffect(() => { if (me) refreshEmployees(); // eslint-disable-next-line
   }, [me, search, shift]);
-  useEffect(() => { if (me) refreshReports(); // eslint-disable-next-line
+  useEffect(() => { if (me && activeTag) refreshReports(); // eslint-disable-next-line
+  }, [me, activeTag, activeYear]);
+  useEffect(() => { if (me && activeTag) refreshYears(); // eslint-disable-next-line
   }, [me, activeTag]);
-  useEffect(() => { if (me && tagsMeta.tags.length === 0) api.reportTags().then(setTagsMeta).catch(() => {}); }, [me, tagsMeta.tags.length]);
+  useEffect(() => {
+    if (me && tagsMeta.tags.length === 0) {
+      api.reportTags().then((d) => {
+        setTagsMeta(d);
+        // Set first tag as default if available
+        if (d.tags && d.tags.length > 0 && !activeTag) {
+          setActiveTag(d.tags[0]);
+        }
+      }).catch(() => {});
+    }
+  }, [me, tagsMeta.tags.length, activeTag]);
 
   const saveEmployee = async (payload) => {
     setSavingEmployee(true);
@@ -676,14 +1026,29 @@ function App() {
     } catch (e) { alert(e.detail || e.message); return null; }
     finally { setSavingEmployee(false); }
   };
-  const deleteEmployee = async (id) => {
-    if (!window.confirm("Remove this employee?")) return;
-    try { await api.deleteEmployee(id); flash("Employee removed"); await refreshEmployees(); }
-    catch (e) { alert(e.detail || e.message); }
+  const deleteEmployee = async () => {
+    setDeletingEmployee(true);
+    try {
+      await api.deleteEmployee(deleteEmployeeConfirm.id);
+      flash("Employee removed");
+      setDeleteEmployeeConfirm(null);
+      await refreshEmployees();
+    }
+    catch (e) {
+      alert(e.detail || e.message);
+      setDeleteEmployeeConfirm(null);
+    }
+    finally { setDeletingEmployee(false); }
   };
-  const uploadReport = async (file, tag, reportDate, access) => {
+  const uploadReport = async (file, tag, reportDate) => {
     setUploading(true);
-    try { await api.uploadReport(file, tag, reportDate, access); setUploadModal(false); flash("Report uploaded"); await refreshReports(); }
+    try {
+      await api.uploadReport(file, tag, reportDate);
+      setUploadModal(false);
+      flash("Report uploaded");
+      await refreshYears(); // Refresh years in case new year was added
+      await refreshReports();
+    }
     catch (e) { throw e; }
     finally { setUploading(false); }
   };
@@ -691,12 +1056,24 @@ function App() {
     try { const { url } = await api.downloadReport(id); if (url) window.open(url, "_blank"); }
     catch (e) { alert(e.detail || e.message); }
   };
-  const deleteReport = async (id) => {
-    if (!window.confirm("Delete this report?")) return;
-    try { await api.deleteReport(id); flash("Report deleted"); await refreshReports(); }
+  const deleteReport = async () => {
+    setDeletingReport(true);
+    try { await api.deleteReport(deleteReportConfirm.id); flash("Report deleted"); setDeleteReportConfirm(null); await refreshReports(); }
     catch (e) { alert(e.detail || e.message); }
+    finally { setDeletingReport(false); }
   };
   const logout = async () => { await supabase.auth.signOut(); setSession(null); setMe(null); };
+
+  // Close profile menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (showProfileMenu && !e.target.closest('.top-profile') && !e.target.closest('[data-profile-menu]')) {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showProfileMenu]);
 
   // Render tree
   if (wsError) return <WorkspaceMissing slug={slug} />;
@@ -706,15 +1083,13 @@ function App() {
   if (meError === "profile_not_found" || meError === "wrong_workspace") return <AccessDenied email={session.user.email} onSignOut={logout} />;
   if (!me) return null;
 
-  const availableAccess = role === "admin" ? ["all", "management", "leadership", "admin"] : ["all", "management", "leadership"];
-
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ position: "fixed", height: "100vh", overflowY: "auto" }}>
         <div className="side-brand"><span className="brand-mark">AF</span><span>{me.company.name}</span></div>
         <div className="side-label">OPERATIONS</div>
         <nav>
-          {[["Overview", LayoutDashboard], ["Employees", Users], ["Reports", FileText]].map(([label, Icon]) => (
+          {[["Overview", LayoutDashboard], ["Employees", Users], ["Attendance", CalendarDays], ["Reports", FileText]].map(([label, Icon]) => (
             <button data-testid={`nav-${label.toLowerCase()}-button`} key={label} className={active === label ? "nav-item active" : "nav-item"} onClick={() => setActive(label)}>
               <Icon size={17} /><span>{label}</span>
               {label === "Reports" && reports.length > 0 && <small>{reports.length}</small>}
@@ -738,13 +1113,86 @@ function App() {
           <button data-testid="logout-button" className="logout-button" onClick={logout}><LogOut size={15} /> Sign out</button>
         </div>
       </aside>
-      <main className="main-content">
+      <main className="main-content" style={{ marginLeft: "235px" }}>
         <header className="topbar">
           <button data-testid="mobile-menu-button" className="mobile-menu"><Menu size={20} /></button>
           <div className="breadcrumb">{me.company.name} <span>/</span> <b>{active}</b></div>
           <div className="top-actions">
-            <button data-testid="notifications-button" className="icon-button notification"><Bell size={18} /><i /></button>
-            <div className="top-profile"><span>{initialsOf(me.profile.full_name)}</span><ChevronDown size={14} /></div>
+            <div style={{ position: "relative" }}>
+              <div className="top-profile" onClick={() => setShowProfileMenu(!showProfileMenu)} style={{ cursor: "pointer" }}>
+                <span>{initialsOf(me.profile.full_name)}</span><ChevronDown size={14} />
+              </div>
+              {showProfileMenu && (
+                <div data-profile-menu style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  background: "var(--elevated)",
+                  border: "1px solid var(--line)",
+                  borderRadius: 8,
+                  minWidth: 200,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                  zIndex: 1000,
+                  overflow: "hidden"
+                }}>
+                  <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>{me.profile.full_name}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{ROLE_LABEL[role]}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowProfileMenu(false);
+                      setShowChangePassword(true);
+                    }}
+                    style={{
+                      width: "100%",
+                      background: "none",
+                      border: "none",
+                      padding: "12px 16px",
+                      textAlign: "left",
+                      color: "var(--text)",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      transition: "all .2s ease"
+                    }}
+                    onMouseEnter={(e) => e.target.style.background = "rgba(255,255,255,0.05)"}
+                    onMouseLeave={(e) => e.target.style.background = "none"}
+                  >
+                    <KeyRound size={15} />
+                    Change Password
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowProfileMenu(false);
+                      logout();
+                    }}
+                    style={{
+                      width: "100%",
+                      background: "none",
+                      border: "none",
+                      borderTop: "1px solid var(--line)",
+                      padding: "12px 16px",
+                      textAlign: "left",
+                      color: "var(--red)",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      transition: "all .2s ease"
+                    }}
+                    onMouseEnter={(e) => e.target.style.background = "rgba(255,59,48,0.1)"}
+                    onMouseLeave={(e) => e.target.style.background = "none"}
+                  >
+                    <LogOut size={15} />
+                    Sign Out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
         {active === "Overview" && (
@@ -754,6 +1202,7 @@ function App() {
             reportsCount={reports.length}
             onViewEmployees={() => setActive("Employees")}
             onViewReports={() => setActive("Reports")}
+            onViewAbsents={() => setActive("Attendance")}
             canAdd={canManageEmployees(role)}
             onAdd={() => setModal({})}
           />
@@ -765,7 +1214,13 @@ function App() {
             role={role}
             onAdd={canManageEmployees(role) ? () => setModal({}) : null}
             onEdit={canManageEmployees(role) ? setModal : null}
-            onDelete={canDeleteEmployees(role) ? deleteEmployee : null}
+            onDelete={canDeleteEmployees(role) ? setDeleteEmployeeConfirm : null}
+            onHistory={setAbsenceFor}
+          />
+        )}
+        {active === "Attendance" && (
+          <Attendance employees={employees}
+            role={role}
             onHistory={setAbsenceFor}
           />
         )}
@@ -773,23 +1228,91 @@ function App() {
           <Reports reports={reports}
             tags={tagsMeta.tags}
             activeTag={activeTag} setActiveTag={setActiveTag}
+            years={years}
+            activeYear={activeYear} setActiveYear={setActiveYear}
             onUpload={canUploadReports(role) ? () => setUploadModal(true) : null}
             onDownload={downloadReport}
-            onDelete={canDeleteEmployees(role) ? deleteReport : null}
+            onDelete={canDeleteEmployees(role) ? setDeleteReportConfirm : null}
             onManageTags={canUploadReports(role) ? () => setTagsModal(true) : null}
           />
         )}
         {notice && <div className="toast" data-testid="success-notice">{notice}<span>✓</span></div>}
-        {modal && <EmployeeModal employee={modal.id ? modal : null} role={role} onClose={() => setModal(null)} onSave={saveEmployee} saving={savingEmployee} />}
-        {uploadModal && <ReportUploadModal onClose={() => setUploadModal(false)} onSubmit={uploadReport} tags={tagsMeta.tags} accessLevels={availableAccess} uploading={uploading} />}
+        {modal && <EmployeeModal employee={modal.id ? modal : null} role={role} onClose={() => setModal(null)} onSave={saveEmployee} onRefresh={refreshEmployees} saving={savingEmployee} />}
+        {uploadModal && <ReportUploadModal onClose={() => setUploadModal(false)} onSubmit={uploadReport} tags={tagsMeta.tags} uploading={uploading} />}
         {teamModal && <TeamModal onClose={() => setTeamModal(false)} currentUserId={me.profile.id} />}
-        {tagsModal && <TagsModal onClose={() => setTagsModal(false)} onChanged={() => api.reportTags().then(setTagsMeta).catch(() => {})} role={role} />}
+        {tagsModal && <TagsModal onClose={() => setTagsModal(false)} onChanged={async () => {
+          const d = await api.reportTags().catch(() => ({ tags: [] }));
+          setTagsMeta(d);
+          // Reset to first tag if current tag was deleted
+          if (d.tags && d.tags.length > 0 && !d.tags.includes(activeTag)) {
+            setActiveTag(d.tags[0]);
+          }
+        }} role={role} />}
         {absenceFor && (
           <AbsenceHistoryModal
             employee={absenceFor}
             canEdit={canManageEmployees(role)}
             onClose={() => setAbsenceFor(null)}
           />
+        )}
+        {showChangePassword && (
+          <ChangePasswordModal
+            onClose={() => setShowChangePassword(false)}
+            onSuccess={() => {
+              setShowChangePassword(false);
+              flash("Password changed successfully");
+            }}
+          />
+        )}
+        {deleteReportConfirm && (
+          <div className="modal-backdrop" style={{ zIndex: 1001 }}>
+            <div className="modal" style={{ width: "min(400px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Delete report?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setDeleteReportConfirm(null)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 8px" }}>
+                <strong>{deleteReportConfirm.name}</strong>
+              </p>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                This will permanently delete this report from S3. This action cannot be undone.
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setDeleteReportConfirm(null)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={deleteReport} disabled={deletingReport}>
+                  {deletingReport ? "Deleting…" : "Delete report"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {deleteEmployeeConfirm && (
+          <div className="modal-backdrop" style={{ zIndex: 1001 }}>
+            <div className="modal" style={{ width: "min(420px, 100%)" }}>
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">CONFIRM DELETE</span>
+                  <h2>Remove employee?</h2>
+                </div>
+                <button className="icon-button" onClick={() => setDeleteEmployeeConfirm(null)}><X size={18} /></button>
+              </div>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 8px" }}>
+                <strong>{deleteEmployeeConfirm.name}</strong>
+              </p>
+              <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
+                This will permanently remove <strong>{deleteEmployeeConfirm.name}</strong> from the employee directory. All associated records and absence history will remain intact.
+              </p>
+              <div className="modal-actions">
+                <button className="outline-button" onClick={() => setDeleteEmployeeConfirm(null)}>Cancel</button>
+                <button className="primary-button" style={{ background: "var(--red)" }} onClick={deleteEmployee} disabled={deletingEmployee}>
+                  {deletingEmployee ? "Removing…" : "Remove employee"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>
@@ -800,9 +1323,11 @@ function PageHead({ eyebrow, title, children }) {
   return <div className="page-head"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1></div>{children}</div>;
 }
 
-function Overview({ me, employeesCount, nightCount, reportsCount, onViewEmployees, onViewReports, canAdd, onAdd }) {
+function Overview({ me, employeesCount, nightCount, reportsCount, onViewEmployees, onViewReports, onViewAbsents, canAdd, onAdd }) {
   const today = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).toUpperCase();
   const nightPct = employeesCount ? Math.round((nightCount / employeesCount) * 100) : 0;
+  // Mock absence data for last 12 days - will be replaced with real data
+  const mockAbsences = [2, 1, 3, 0, 2, 1, 0, 1, 3, 0, 1, 2];
   return (
     <div className="page">
       <PageHead eyebrow={today} title={`Good day, ${me.profile.full_name.split(" ")[0]}.`}>
@@ -826,20 +1351,24 @@ function Overview({ me, employeesCount, nightCount, reportsCount, onViewEmployee
         <Metric label="Your role" value={ROLE_LABEL[me.profile.role]} change={me.company.name} note="workspace" color="green" />
       </div>
       <div className="overview-grid">
-        <section className="data-section">
+        <section className="data-section" style={{ cursor: "pointer" }} onClick={onViewAbsents}>
           <div className="section-head">
-            <div><span className="eyebrow">WORKFORCE</span><h3>Weekly attendance signal</h3></div>
-            <button data-testid="overview-view-employees-button" className="text-button" onClick={onViewEmployees}>View directory <span>→</span></button>
+            <div><span className="eyebrow">WORKFORCE</span><h3>Daily absences (Last 12 days)</h3></div>
+            <button data-testid="overview-view-absents-button" className="text-button" onClick={(e) => { e.stopPropagation(); onViewAbsents(); }}>View attendance <span>→</span></button>
           </div>
           <div className="attendance-chart">
-            <div className="chart-y"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
+            <div className="chart-y"><span>10</span><span>8</span><span>5</span><span>3</span><span>0</span></div>
             <div className="bars">
-              {[68, 78, 73, 88, 76, 94, 84, 92, 81, 97, 86, 90].map((height, i) => (
-                <div className="bar-group" key={i}>
-                  <div className={`bar ${i > 8 ? "bright" : ""}`} style={{ height: `${height}%` }} title={`${height}%`} />
-                  <span>{["M", "T", "W", "T", "F", "S"][i % 6]}</span>
-                </div>
-              ))}
+              {mockAbsences.map((count, i) => {
+                const maxAbsences = 10;
+                const height = (count / maxAbsences) * 100;
+                return (
+                  <div className="bar-group" key={i}>
+                    <div className={`bar ${i > 8 ? "bright" : ""}`} style={{ height: `${height}%`, background: count === 0 ? "var(--green)" : undefined }} title={`${count} absent`} />
+                    <span>{["M", "T", "W", "T", "F", "S"][i % 6]}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </section>
@@ -900,7 +1429,7 @@ function Employees({ employees, search, setSearch, shift, setShift, role, onAdd,
                 <tr data-testid={`employee-row-${e.id}`} key={e.id}>
                   <td>
                     <div className="person">
-                      <div className="avatar">{e.photo_url ? <img src={e.photo_url} alt="" /> : initialsOf(e.name)}</div>
+                      <EmployeeAvatar employee={e} size={36} />
                       <div><strong>{e.name}</strong><span>{e.role || "—"}</span></div>
                     </div>
                   </td>
@@ -913,7 +1442,7 @@ function Employees({ employees, search, setSearch, shift, setShift, role, onAdd,
                       <div className="row-actions">
                         <button data-testid={`history-employee-${e.id}-button`} className="icon-button" title="Absence history" onClick={() => onHistory(e)}><CalendarDays size={15} /></button>
                         {onEdit && <button data-testid={`edit-employee-${e.id}-button`} className="icon-button" onClick={() => onEdit(e)}><Pencil size={15} /></button>}
-                        {onDelete && <button data-testid={`delete-employee-${e.id}-button`} className="icon-button danger" onClick={() => onDelete(e.id)}><Trash2 size={15} /></button>}
+                        {onDelete && <button data-testid={`delete-employee-${e.id}-button`} className="icon-button danger" onClick={() => onDelete(e)}><Trash2 size={15} /></button>}
                       </div>
                     </td>
                   )}
@@ -928,8 +1457,360 @@ function Employees({ employees, search, setSearch, shift, setShift, role, onAdd,
   );
 }
 
-function Reports({ reports, tags, activeTag, setActiveTag, onUpload, onDownload, onDelete, onManageTags }) {
-  const filterTags = ["All reports", ...tags];
+function Attendance({ employees, onHistory }) {
+  const now = new Date();
+  const [viewMode, setViewMode] = useState("by-month"); // "by-month" or "by-day"
+  const [selectedMonth, setSelectedMonth] = useState(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`);
+  const [selectedShift, setSelectedShift] = useState("Both");
+  const [selectedEmployee, setSelectedEmployee] = useState("All");
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [showEmployeeList, setShowEmployeeList] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(now.toISOString().slice(0, 10));
+  const [absencesData, setAbsencesData] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAbsences = async () => {
+      setLoading(true);
+      try {
+        const allAbsences = await Promise.all(
+          employees.map(async (emp) => {
+            try {
+              const absences = await api.listAbsences(emp.id);
+              return { employee: emp, absences };
+            } catch {
+              return { employee: emp, absences: [] };
+            }
+          })
+        );
+        setAbsencesData(allAbsences);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (employees.length > 0) fetchAbsences();
+  }, [employees]);
+
+  // Get filtered employees based on shift and search
+  const getFilteredEmployees = () => {
+    return employees
+      .filter(e => selectedShift === "Both" || e.shift === selectedShift)
+      .filter(e => e.name.toLowerCase().includes(employeeSearch.toLowerCase()));
+  };
+
+  const selectEmployee = (empId, empName) => {
+    setSelectedEmployee(empId);
+    if (empId === "All") {
+      setEmployeeSearch("");
+    } else {
+      setEmployeeSearch(empName);
+    }
+    setShowEmployeeList(false);
+  };
+
+  const getSelectedEmployeeName = () => {
+    if (selectedEmployee === "All") return "All Employees";
+    const emp = employees.find(e => e.id === selectedEmployee);
+    return emp ? emp.name : "All Employees";
+  };
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (showEmployeeList && !e.target.closest('[data-employee-search]')) {
+        setShowEmployeeList(false);
+        if (!employeeSearch) {
+          setEmployeeSearch("");
+        }
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showEmployeeList, employeeSearch]);
+
+  // Filter for by-month view
+  const monthFilteredData = absencesData.filter(({ employee, absences }) => {
+    if (selectedShift !== "Both" && employee.shift !== selectedShift) return false;
+    if (selectedEmployee !== "All" && employee.id !== selectedEmployee) return false;
+    const monthAbsences = absences.filter(a => a.absence_date.startsWith(selectedMonth));
+    return monthAbsences.length > 0 || selectedEmployee !== "All";
+  }).map(({ employee, absences }) => ({
+    employee,
+    absences: absences.filter(a => a.absence_date.startsWith(selectedMonth))
+  }));
+
+  // Filter for by-day view
+  const dayFilteredData = absencesData.filter(({ employee }) => {
+    if (selectedShift !== "Both" && employee.shift !== selectedShift) return false;
+    if (selectedEmployee !== "All" && employee.id !== selectedEmployee) return false;
+    return true;
+  }).filter(({ absences }) => absences.some(a => a.absence_date === selectedDate));
+
+  const totalAbsences = viewMode === "by-month"
+    ? monthFilteredData.reduce((sum, item) => sum + item.absences.length, 0)
+    : dayFilteredData.length;
+
+  // Generate calendar days for selected month
+  const getDaysInMonth = () => {
+    const [year, month] = selectedMonth.split("-").map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    return Array.from({ length: daysInMonth }, (_, i) => `${selectedMonth}-${String(i + 1).padStart(2, "0")}`);
+  };
+
+  const getAbsenceDatesForEmployee = (empAbsences) => {
+    return new Set(empAbsences.map(a => a.absence_date));
+  };
+
+  return (
+    <div className="page">
+      <PageHead eyebrow="ATTENDANCE TRACKING" title="Attendance & Absences" />
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className="eyebrow" style={{ marginBottom: 0 }}>VIEW</span>
+          <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer" }}>
+            <option value="by-month">By Month</option>
+            <option value="by-day">By Day</option>
+          </select>
+        </div>
+
+        {viewMode === "by-month" ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="eyebrow" style={{ marginBottom: 0 }}>MONTH</span>
+            <input type="month" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, colorScheme: "dark" }} />
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="eyebrow" style={{ marginBottom: 0 }}>DATE</span>
+            <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, colorScheme: "dark" }} />
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className="eyebrow" style={{ marginBottom: 0 }}>SHIFT</span>
+          <select value={selectedShift} onChange={(e) => setSelectedShift(e.target.value)} style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, cursor: "pointer" }}>
+            <option>Both</option>
+            <option>Day shift</option>
+            <option>Night shift</option>
+          </select>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
+          <span className="eyebrow" style={{ marginBottom: 0 }}>EMPLOYEE</span>
+          <div style={{ position: "relative" }} data-employee-search>
+            <input
+              type="text"
+              value={employeeSearch || (selectedEmployee !== "All" ? getSelectedEmployeeName() : "")}
+              onChange={(e) => {
+                setEmployeeSearch(e.target.value);
+                setShowEmployeeList(true);
+              }}
+              onFocus={() => setShowEmployeeList(true)}
+              placeholder={selectedEmployee === "All" ? "All Employees - Type to search..." : "Type to search..."}
+              style={{
+                background: "var(--surface)",
+                border: "1px solid var(--line)",
+                color: "var(--text)",
+                padding: "8px 14px",
+                paddingRight: (employeeSearch || selectedEmployee !== "All") ? 32 : 14,
+                fontSize: 12,
+                fontWeight: 600,
+                borderRadius: 6,
+                minWidth: 200,
+                outline: "none"
+              }}
+            />
+            {(employeeSearch || selectedEmployee !== "All") && (
+              <button
+                onClick={() => {
+                  setEmployeeSearch("");
+                  setSelectedEmployee("All");
+                  setShowEmployeeList(false);
+                }}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "none",
+                  border: "none",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  padding: 4,
+                  display: "flex",
+                  alignItems: "center"
+                }}
+              >
+                <X size={14} />
+              </button>
+            )}
+            {showEmployeeList && (
+              <div style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                right: 0,
+                marginTop: 4,
+                background: "var(--elevated)",
+                border: "1px solid var(--line)",
+                borderRadius: 6,
+                maxHeight: 300,
+                overflowY: "auto",
+                zIndex: 100,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.4)"
+              }}>
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    borderBottom: "1px solid var(--line)",
+                    color: selectedEmployee === "All" ? "var(--blue)" : "var(--text)",
+                    fontWeight: 600
+                  }}
+                  onClick={() => selectEmployee("All", "")}
+                >
+                  All Employees
+                </div>
+                {getFilteredEmployees().map(emp => (
+                  <div
+                    key={emp.id}
+                    style={{
+                      padding: "10px 14px",
+                      fontSize: 12,
+                      cursor: "pointer",
+                      borderBottom: "1px solid rgba(255,255,255,0.05)",
+                      color: selectedEmployee === emp.id ? "var(--blue)" : "var(--text)",
+                      transition: "all .2s ease"
+                    }}
+                    onMouseEnter={(e) => e.target.style.background = "rgba(255,255,255,0.05)"}
+                    onMouseLeave={(e) => e.target.style.background = "transparent"}
+                    onClick={() => selectEmployee(emp.id, emp.name)}
+                  >
+                    <div style={{ fontWeight: 600 }}>{emp.name}</div>
+                    <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{emp.role || "—"} · {emp.shift}</div>
+                  </div>
+                ))}
+                {getFilteredEmployees().length === 0 && employeeSearch && (
+                  <div style={{ padding: "20px 14px", fontSize: 11, color: "var(--muted)", textAlign: "center" }}>
+                    No employees found
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {viewMode === "by-month" && (
+        <section className="table-section">
+          <div className="table-caption">
+            <div><span className="eyebrow">MONTHLY VIEW / {monthFilteredData.filter(d => d.absences.length > 0).length} EMPLOYEES · {totalAbsences} TOTAL ABSENCES</span><h3>Absences for {selectedMonth}</h3></div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Shift</th>
+                  <th>Absences</th>
+                  <th>Calendar</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan="5" style={{ textAlign: "center", padding: "40px", color: "var(--muted)" }}>Loading...</td></tr>}
+                {!loading && monthFilteredData.map(({ employee, absences }) => {
+                  const absentDates = getAbsenceDatesForEmployee(absences);
+                  const days = getDaysInMonth();
+                  return (
+                    <tr key={employee.id}>
+                      <td>
+                        <div className="person">
+                          <EmployeeAvatar employee={employee} size={36} />
+                          <div><strong>{employee.name}</strong><span>{employee.role || "—"}</span></div>
+                        </div>
+                      </td>
+                      <td><span className={`shift-pill ${employee.shift === "Night shift" ? "night" : "day"}`}><i />{employee.shift}</span></td>
+                      <td className="salary">{absences.length}</td>
+                      <td>
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap", maxWidth: 400 }}>
+                          {days.map(day => {
+                            const isAbsent = absentDates.has(day);
+                            const dayNum = day.split("-")[2];
+                            return (
+                              <div key={day} style={{ width: 28, height: 28, display: "grid", placeItems: "center", background: isAbsent ? "var(--red)" : "rgba(255,255,255,0.05)", border: "1px solid " + (isAbsent ? "var(--red)" : "#303848"), borderRadius: 4, fontSize: 10, color: isAbsent ? "#fff" : "#6d7a8e", fontWeight: isAbsent ? 700 : 400 }} title={isAbsent ? `Absent on ${day}` : day}>
+                                {dayNum}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button className="icon-button" onClick={() => onHistory(employee)} title="View details"><CalendarDays size={15} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!loading && monthFilteredData.filter(d => d.absences.length > 0).length === 0 && <div className="empty-state">No absences for this selection.</div>}
+          </div>
+        </section>
+      )}
+
+      {viewMode === "by-day" && (
+        <section className="table-section">
+          <div className="table-caption">
+            <div><span className="eyebrow">DAILY VIEW / {dayFilteredData.length} ABSENT</span><h3>Absences on {selectedDate}</h3></div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Shift</th>
+                  <th>Reason</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan="4" style={{ textAlign: "center", padding: "40px", color: "var(--muted)" }}>Loading...</td></tr>}
+                {!loading && dayFilteredData.map(({ employee, absences }) => {
+                  const absence = absences.find(a => a.absence_date === selectedDate);
+                  return (
+                    <tr key={employee.id}>
+                      <td>
+                        <div className="person">
+                          <EmployeeAvatar employee={employee} size={36} />
+                          <div><strong>{employee.name}</strong><span>{employee.role || "—"}</span></div>
+                        </div>
+                      </td>
+                      <td><span className={`shift-pill ${employee.shift === "Night shift" ? "night" : "day"}`}><i />{employee.shift}</span></td>
+                      <td>{absence?.reason || "—"}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button className="icon-button" onClick={() => onHistory(employee)} title="View history"><CalendarDays size={15} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!loading && dayFilteredData.length === 0 && <div className="empty-state">No absences on this date.</div>}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Reports({ reports, tags, activeTag, setActiveTag, years, activeYear, setActiveYear, onUpload, onDownload, onDelete, onManageTags }) {
   return (
     <div className="page">
       <PageHead eyebrow="DOCUMENT REPOSITORY" title="Reports">
@@ -942,47 +1823,73 @@ function Reports({ reports, tags, activeTag, setActiveTag, onUpload, onDownload,
         <div>
           <span className="eyebrow">AUTOMATED FILE NAMING</span>
           <h2>Keep every report findable.</h2>
-          <p>Filenames are auto-generated as <b>Tag-Date.pdf</b> when you upload. Tag & access rules are saved with every document.</p>
+          <p>Filenames are auto-generated as <b>Date.pdf</b> when you upload. Organized by tag and year in S3.</p>
         </div>
         <div className="report-rule"><FileText size={20} /><span>PDF only<br /><b>Max 25 MB per file</b></span></div>
       </section>
-      <div className="tag-row">
-        <span className="eyebrow">FILTER BY TAG</span>
-        {filterTags.map((tag) => (
-          <button data-testid={`report-tag-${tag.toLowerCase().replace(/\s+/g, "-")}-button`} className={activeTag === tag ? "tag active" : "tag"} key={tag} onClick={() => setActiveTag(tag)}>{tag}</button>
-        ))}
+      <div style={{ display: "flex", gap: 20, marginTop: 32, marginBottom: 24, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="tag-row" style={{ margin: 0 }}>
+          <span className="eyebrow">TAG</span>
+          {tags.map((tag) => (
+            <button data-testid={`report-tag-${tag.toLowerCase().replace(/\s+/g, "-")}-button`} className={activeTag === tag ? "tag active" : "tag"} key={tag} onClick={() => setActiveTag(tag)}>{tag}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span className="eyebrow" style={{ marginBottom: 0 }}>YEAR</span>
+          <select
+            data-testid="report-year-select"
+            value={activeYear}
+            onChange={(e) => setActiveYear(e.target.value)}
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--line)",
+              color: "var(--text)",
+              padding: "8px 14px",
+              fontSize: 12,
+              fontWeight: 600,
+              borderRadius: 6,
+              cursor: "pointer",
+              minWidth: 100
+            }}
+          >
+            {years.map((year) => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+        </div>
       </div>
       <section className="table-section report-table">
         <div className="table-caption">
           <div><span className="eyebrow">REPOSITORY / {String(reports.length).padStart(2, "0")} FILES</span><h3>Recent reports</h3></div>
-          <span className="access-note"><ShieldCheck size={14} /> Role-based access enabled</span>
         </div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Document</th><th>Tag</th><th>Date</th><th>Access</th><th /></tr></thead>
+            <thead><tr><th>Document</th><th>Tag</th><th>Date</th><th>Year</th><th>Size</th><th /></tr></thead>
             <tbody>
               {reports.map((r) => (
                 <tr data-testid={`report-row-${r.id}`} key={r.id}>
                   <td>
                     <div className="document">
                       <div className="file-icon"><FileText size={17} /></div>
-                      <div><strong>{r.name}</strong><span>Uploaded by {r.uploaded_by || "—"}</span></div>
+                      <div><strong>{r.name}</strong></div>
                     </div>
                   </td>
                   <td><span className="report-tag">{r.tag}</span></td>
                   <td>{r.report_date}</td>
-                  <td>{ACCESS_LABEL[r.access] || r.access}</td>
+                  <td>{r.year}</td>
+                  <td>{r.size ? `${Math.round(r.size / 1024)} KB` : "—"}</td>
                   <td>
                     <div className="row-actions">
+                      <button data-testid={`view-report-${r.id}-button`} className="icon-button" onClick={() => onDownload(r.id)} title="View"><Eye size={15} /></button>
                       <button data-testid={`download-report-${r.id}-button`} className="icon-button" onClick={() => onDownload(r.id)} title="Download"><Download size={15} /></button>
-                      {onDelete && <button data-testid={`delete-report-${r.id}-button`} className="icon-button danger" onClick={() => onDelete(r.id)} title="Delete"><Trash2 size={15} /></button>}
+                      {onDelete && <button data-testid={`delete-report-${r.id}-button`} className="icon-button danger" onClick={() => onDelete(r)} title="Delete"><Trash2 size={15} /></button>}
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {reports.length === 0 && <div className="empty-state" data-testid="reports-empty-state">No reports yet.</div>}
+          {reports.length === 0 && <div className="empty-state" data-testid="reports-empty-state">No reports yet for this tag/year.</div>}
         </div>
       </section>
     </div>
