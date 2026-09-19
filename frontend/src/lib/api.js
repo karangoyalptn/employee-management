@@ -39,6 +39,11 @@ async function request(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    // Handle 401 - session expired/invalid
+    if (res.status === 401) {
+      await supabase.auth.signOut();
+      window.location.reload();
+    }
     const err = new Error(data?.detail || res.statusText);
     err.status = res.status;
     err.detail = data?.detail;
@@ -60,6 +65,11 @@ async function uploadFile(path, file, extraFields = {}) {
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    // Handle 401 - session expired/invalid
+    if (res.status === 401) {
+      await supabase.auth.signOut();
+      window.location.reload();
+    }
     const err = new Error(body?.detail || res.statusText);
     err.status = res.status; err.detail = body?.detail;
     throw err;
@@ -92,17 +102,28 @@ export const api = {
   addAbsence: (employeeId, payload) => request(`/employees/${employeeId}/absences`, { method: "POST", body: JSON.stringify(payload) }),
   deleteAbsence: (absenceId) => request(`/absences/${absenceId}`, { method: "DELETE" }),
 
-  listReports: (tag) => request(`/reports${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`),
+  // Reports - S3 based
+  listReports: (tag, year) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    if (year) params.set("year", year);
+    return request(`/reports${params.toString() ? `?${params.toString()}` : ""}`);
+  },
+  getReportYears: (tag) => request(`/reports/years?tag=${encodeURIComponent(tag)}`),
+  uploadReport: async (file, tag, reportDate) => uploadFile("/reports/upload", file, { tag, report_date: reportDate }),
+  downloadReport: (id) => request(`/reports/${encodeURIComponent(id)}/download`),
+  deleteReport: (id) => request(`/reports/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // Report Tags - S3 based
   reportTags: () => request("/reports/tags"),
   createTag: (name) => request("/reports/tags", { method: "POST", body: JSON.stringify({ name }) }),
-  deleteTag: (id) => request(`/reports/tags/${id}`, { method: "DELETE" }),
+  renameTag: (oldName, newName) => request(`/reports/tags/${encodeURIComponent(oldName)}`, { method: "PUT", body: JSON.stringify({ name: newName }) }),
+  deleteTag: (name) => request(`/reports/tags/${encodeURIComponent(name)}`, { method: "DELETE" }),
 
   uploadEmployeePhoto: async (id, file) => uploadFile(`/employees/${id}/photo`, file),
+  getEmployeePhotoUrl: (id) => request(`/employees/${id}/photo-url`),
   deleteEmployeePhoto: (id) => request(`/employees/${id}/photo`, { method: "DELETE" }),
   uploadEmployeeIdDoc: async (id, file) => uploadFile(`/employees/${id}/id-doc`, file),
   getEmployeeIdDocUrl: (id) => request(`/employees/${id}/id-doc`),
   deleteEmployeeIdDoc: (id) => request(`/employees/${id}/id-doc`, { method: "DELETE" }),
-  uploadReport: async (file, tag, reportDate, access) => uploadFile("/reports/upload", file, { tag, report_date: reportDate, access }),
-  downloadReport: (id) => request(`/reports/${id}/download`),
-  deleteReport: (id) => request(`/reports/${id}`, { method: "DELETE" }),
 };
