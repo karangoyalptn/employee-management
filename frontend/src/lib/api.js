@@ -101,6 +101,7 @@ export const api = {
   listAbsences: (employeeId) => request(`/employees/${employeeId}/absences`),
   addAbsence: (employeeId, payload) => request(`/employees/${employeeId}/absences`, { method: "POST", body: JSON.stringify(payload) }),
   deleteAbsence: (absenceId) => request(`/absences/${absenceId}`, { method: "DELETE" }),
+  getAbsenceStats: (days = 7) => request(`/absences/stats/by-date?days=${days}`),
 
   // Reports - S3 based
   listReports: (tag, year) => {
