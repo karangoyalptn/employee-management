@@ -1114,7 +1114,7 @@ function App() {
             <UserCog size={17} /><span>Team & roles</span>
           </button>
         )}
-        <button data-testid="nav-settings-button" className="nav-item"><Settings size={17} /><span>Settings</span></button>
+        <button data-testid="nav-settings-button" className={active === "Settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("Settings")}><Settings size={17} /><span>Settings</span></button>
         <div className="side-bottom">
           <div className="status-dot"><i /> Systems operational</div>
           <div className="profile">
@@ -1246,6 +1246,17 @@ function App() {
             onDownload={downloadReport}
             onDelete={canDeleteEmployees(role) ? setDeleteReportConfirm : null}
             onManageTags={canUploadReports(role) ? () => setTagsModal(true) : null}
+          />
+        )}
+        {active === "Settings" && (
+          <CompanySettings
+            company={me.company}
+            role={role}
+            onUpdate={async () => {
+              const data = await api.me();
+              setMe(data);
+              flash("Company information updated");
+            }}
           />
         )}
         {notice && <div className="toast" data-testid="success-notice">{notice}<span>✓</span></div>}
@@ -1930,6 +1941,194 @@ function Reports({ reports, tags, activeTag, setActiveTag, years, activeYear, se
           {reports.length === 0 && <div className="empty-state" data-testid="reports-empty-state">No reports yet for this tag/year.</div>}
         </div>
       </section>
+    </div>
+  );
+}
+
+function CompanySettings({ company, role, onUpdate }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [companyName, setCompanyName] = useState(company.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSave = async () => {
+    if (!companyName.trim()) {
+      setError("Company name cannot be empty");
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      await api.updateCompany({ name: companyName.trim() });
+      setIsEditing(false);
+      onUpdate();
+    } catch (e) {
+      setError(e.detail || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setCompanyName(company.name);
+    setError("");
+    setIsEditing(false);
+  };
+
+  return (
+    <div className="page">
+      <PageHead eyebrow="WORKSPACE CONFIGURATION" title="Settings" />
+
+      <section className="data-section" style={{ marginBottom: 18 }}>
+        <div className="section-head">
+          <div>
+            <span className="eyebrow">COMPANY INFORMATION</span>
+            <h3>Workspace details</h3>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 28 }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "180px 1fr",
+            gap: 24,
+            padding: "20px 0",
+            borderBottom: "1px solid var(--line)"
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginBottom: 4 }}>Company Name</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              {isEditing ? (
+                <>
+                  <input
+                    type="text"
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                    style={{
+                      background: "var(--elevated)",
+                      border: "1px solid var(--line)",
+                      color: "var(--text)",
+                      padding: "10px 14px",
+                      fontSize: 13,
+                      borderRadius: 6,
+                      outline: "none",
+                      flex: 1,
+                      maxWidth: 400
+                    }}
+                    autoFocus
+                  />
+                  <button
+                    className="primary-button"
+                    onClick={handleSave}
+                    disabled={saving}
+                    style={{ padding: "10px 18px", fontSize: 12 }}
+                  >
+                    {saving ? "Saving..." : <><Check size={15} /> Save</>}
+                  </button>
+                  <button
+                    className="outline-button"
+                    onClick={handleCancel}
+                    disabled={saving}
+                    style={{ padding: "10px 18px" }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 600, flex: 1 }}>
+                    {company.name}
+                  </div>
+                  {role === "admin" && (
+                    <button
+                      className="icon-button"
+                      onClick={() => setIsEditing(true)}
+                      title="Edit company name"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+          {error && (
+            <div style={{
+              background: "rgba(255, 59, 48, 0.1)",
+              border: "1px solid rgba(255, 59, 48, 0.3)",
+              color: "var(--red)",
+              padding: "12px 16px",
+              fontSize: 12,
+              borderRadius: 6,
+              marginTop: 16
+            }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "180px 1fr",
+            gap: 24,
+            padding: "20px 0",
+            borderBottom: "1px solid var(--line)"
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginBottom: 4 }}>Workspace Slug</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 600 }}>
+                {company.slug}
+              </div>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                Used in URL: {company.slug}.manage.zreports.in
+              </div>
+            </div>
+          </div>
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "180px 1fr",
+            gap: 24,
+            padding: "20px 0"
+          }}>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginBottom: 4 }}>Company ID</div>
+            </div>
+            <div>
+              <div style={{
+                fontSize: 11,
+                color: "var(--muted)",
+                fontFamily: "monospace",
+                background: "var(--elevated)",
+                padding: "8px 12px",
+                borderRadius: 4,
+                display: "inline-block"
+              }}>
+                {company.id}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {role !== "admin" && (
+        <div style={{
+          background: "rgba(10, 132, 255, 0.08)",
+          border: "1px solid rgba(10, 132, 255, 0.2)",
+          padding: "14px 18px",
+          borderRadius: 8,
+          fontSize: 11,
+          color: "var(--blue)",
+          display: "flex",
+          alignItems: "center",
+          gap: 10
+        }}>
+          <ShieldCheck size={16} />
+          Only admins can edit company information. Contact your admin to make changes.
+        </div>
+      )}
     </div>
   );
 }
