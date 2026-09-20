@@ -171,16 +171,17 @@ The system has 4 roles with decreasing levels of access:
 | View Employees | ✅ | ✅ | ✅ | ✅ |
 | Add Employees | ✅ | ✅ | ✅ | ❌ |
 | Edit Employees | ✅ | ✅ | ✅ | ❌ |
-| Delete Employees | ✅ | ✅ | ❌ | ❌ |
+| Delete Employees | ✅ | ❌ | ❌ | ❌ |
 | View Salary | ✅ | ✅ | ❌ | ❌ |
 | Upload Photos/Docs | ✅ | ✅ | ✅ | ❌ |
 | Manage Absences | ✅ | ✅ | ✅ | ❌ |
+| Delete Absence | ✅ | ❌ | ❌ | ❌ |
 | **Reports** |
 | View Reports | ✅ | ✅ | ✅ | ✅ |
 | Download Reports | ✅ | ✅ | ✅ | ✅ |
-| Upload Reports | ✅ | ✅ | ❌ | ❌ |
-| Delete Reports | ✅ | ✅ | ❌ | ❌ |
-| Manage Tags | ✅ | ✅ | ❌ | ❌ |
+| Upload Reports | ✅ | ✅ | ✅ | ❌ |
+| Delete Reports | ✅ | ❌ | ❌ | ❌ |
+| Manage Tags | ✅ | ❌ | ❌ | ❌ |
 | **Attendance** |
 | View Attendance | ✅ | ✅ | ✅ | ✅ |
 | View Absence History | ✅ | ✅ | ✅ | ✅ (read-only) |
