@@ -281,7 +281,7 @@ api.patch("/employees/:id", async (req, res) => {
 api.delete("/employees/:id", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership"*/])) return httpErr(res, 403, "Requires one of: admin");
   const { id } = req.params;
   const { data: existing } = await sb.from("employees").select("*").eq("id", id).maybeSingle();
   if (!existing || existing.company_id !== ctx.profile.company_id) return httpErr(res, 404, "Employee not found");
@@ -593,10 +593,83 @@ api.post("/employees/:id/absences", async (req, res) => {
   res.status(201).json(data);
 });
 
+// Get absence statistics by date (for dashboard chart)
+api.get("/absences/stats/by-date", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+
+  const days = parseInt(req.query.days) || 7;
+  if (days < 1 || days > 30) return httpErr(res, 400, "days must be between 1 and 30");
+
+  // Calculate date range
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(endDate.getDate() - (days - 1));
+
+  const startDateStr = startDate.toISOString().split('T')[0];
+  const endDateStr = endDate.toISOString().split('T')[0];
+
+  try {
+    // Step 1: Get all employee IDs for this company
+    const { data: employees, error: empError } = await sb
+      .from("employees")
+      .select("id")
+      .eq("company_id", ctx.profile.company_id);
+
+    if (empError) return httpErr(res, 500, empError.message);
+    if (!employees || employees.length === 0) {
+      // No employees = no absences
+      const result = [];
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        result.push({
+          date: d.toISOString().split('T')[0],
+          count: 0,
+        });
+      }
+      return res.json(result);
+    }
+
+    const employeeIds = employees.map(e => e.id);
+
+    // Step 2: Get absences for those employees in date range
+    const { data: absences, error: absError } = await sb
+      .from("absences")
+      .select("absence_date, employee_id")
+      .in("employee_id", employeeIds)
+      .gte("absence_date", startDateStr)
+      .lte("absence_date", endDateStr);
+
+    if (absError) return httpErr(res, 500, absError.message);
+
+    // Group by date and count
+    const countsByDate = {};
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      countsByDate[dateStr] = 0;
+    }
+
+    (absences || []).forEach(absence => {
+      if (countsByDate[absence.absence_date] !== undefined) {
+        countsByDate[absence.absence_date]++;
+      }
+    });
+
+    // Convert to array format for chart
+    const result = Object.keys(countsByDate).sort().map(date => ({
+      date,
+      count: countsByDate[date],
+    }));
+
+    res.json(result);
+  } catch (error) {
+    return httpErr(res, 500, error.message);
+  }
+});
+
 api.delete("/absences/:absenceId", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership", "manager"*/])) return httpErr(res, 403, "Requires one of: admin"/*, leadership, manager*/);
   const { absenceId } = req.params;
   const { data: abs } = await sb.from("absences").select("id,employee_id").eq("id", absenceId).maybeSingle();
   if (!abs) return httpErr(res, 404, "Absence not found");
@@ -637,7 +710,7 @@ api.get("/reports/tags", async (req, res) => {
 api.post("/reports/tags", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership"*/])) return httpErr(res, 403, "Requires one of: admin");
 
   const name = String(req.body?.name || "").trim();
   if (name.length < 2 || name.length > 60) return httpErr(res, 400, "name must be 2-60 characters");
@@ -674,7 +747,7 @@ api.post("/reports/tags", async (req, res) => {
 api.put("/reports/tags/:tagName", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership"*/])) return httpErr(res, 403, "Requires one of: admin");
 
   const oldName = req.params.tagName;
   const newName = String(req.body?.name || "").trim();
@@ -734,7 +807,7 @@ api.put("/reports/tags/:tagName", async (req, res) => {
 api.delete("/reports/tags/:tagName", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership"*/])) return httpErr(res, 403, "Requires one of: admin");
 
   const tagName = req.params.tagName;
 
@@ -856,7 +929,7 @@ api.get("/reports/years", async (req, res) => {
 api.post("/reports/upload", upload.single("file"), async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin", "leadership", "manager"])) return httpErr(res, 403, "Requires one of: admin, leadership, manager");
 
   const { tag, report_date } = req.body || {};
   if (!tag) return httpErr(res, 400, "tag required");
@@ -924,7 +997,7 @@ api.get("/reports/*/download", async (req, res) => {
 api.delete("/reports/*", async (req, res) => {
   const ctx = await currentProfile(req);
   if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
-  if (!requireRole(ctx.profile, ["admin", "leadership"])) return httpErr(res, 403, "Requires one of: admin, leadership");
+  if (!requireRole(ctx.profile, ["admin"/*, "leadership"*/])) return httpErr(res, 403, "Requires one of: admin");
 
   const s3Key = decodeURIComponent(req.params[0]);
 
