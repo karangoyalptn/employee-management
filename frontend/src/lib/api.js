@@ -79,6 +79,7 @@ async function uploadFile(path, file, extraFields = {}) {
 
 export const api = {
   lookupCompany: (slug) => request(`/companies/lookup?slug=${encodeURIComponent(slug)}`),
+  updateCompany: (payload) => request("/companies", { method: "PATCH", body: JSON.stringify(payload) }),
 
   me: () => request("/auth/me"),
 
