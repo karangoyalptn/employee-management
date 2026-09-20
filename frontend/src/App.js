@@ -16,7 +16,7 @@ const ROLE_LABEL = { admin: "Admin", leadership: "Leadership", manager: "Manager
 
 const canManageEmployees = (r) => ["admin", "leadership", "manager"].includes(r);
 const canDeleteEmployees = (r) => ["admin", "leadership"].includes(r);
-const canUploadReports = (r) => ["admin", "leadership"].includes(r);
+const canUploadReports = (r) => ["admin", "leadership", "manager"].includes(r);
 const canSeeSalary = (r) => ["admin", "leadership"].includes(r);
 
 const initialsOf = (name) => (name || "").split(" ").filter(Boolean).map((n) => n[0]).join("").slice(0, 2).toUpperCase();
@@ -941,10 +941,12 @@ function App() {
   const [years, setYears] = useState([new Date().getFullYear().toString()]);
   const [deleteReportConfirm, setDeleteReportConfirm] = useState(null);
   const [deletingReport, setDeletingReport] = useState(false);
+  const [deleteReportError, setDeleteReportError] = useState("");
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [deleteEmployeeConfirm, setDeleteEmployeeConfirm] = useState(null);
   const [deletingEmployee, setDeletingEmployee] = useState(false);
+  const [deleteEmployeeError, setDeleteEmployeeError] = useState("");
 
   // Resolve workspace by slug (public)
   useEffect(() => {
@@ -1028,6 +1030,7 @@ function App() {
   };
   const deleteEmployee = async () => {
     setDeletingEmployee(true);
+    setDeleteEmployeeError("");
     try {
       await api.deleteEmployee(deleteEmployeeConfirm.id);
       flash("Employee removed");
@@ -1035,8 +1038,7 @@ function App() {
       await refreshEmployees();
     }
     catch (e) {
-      alert(e.detail || e.message);
-      setDeleteEmployeeConfirm(null);
+      setDeleteEmployeeError(e.detail || e.message);
     }
     finally { setDeletingEmployee(false); }
   };
@@ -1058,9 +1060,19 @@ function App() {
   };
   const deleteReport = async () => {
     setDeletingReport(true);
-    try { await api.deleteReport(deleteReportConfirm.id); flash("Report deleted"); setDeleteReportConfirm(null); await refreshReports(); }
-    catch (e) { alert(e.detail || e.message); }
-    finally { setDeletingReport(false); }
+    setDeleteReportError("");
+    try {
+      await api.deleteReport(deleteReportConfirm.id);
+      flash("Report deleted");
+      setDeleteReportConfirm(null);
+      await refreshReports();
+    }
+    catch (e) {
+      setDeleteReportError(e.detail || e.message);
+    }
+    finally {
+      setDeletingReport(false);
+    }
   };
   const logout = async () => { await supabase.auth.signOut(); setSession(null); setMe(null); };
 
@@ -1280,8 +1292,13 @@ function App() {
               <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
                 This will permanently delete this report from S3. This action cannot be undone.
               </p>
+              {deleteReportError && (
+                <p style={{ color: "var(--red)", fontSize: 11, marginBottom: 16, padding: 10, background: "rgba(255,59,48,0.1)", borderRadius: 6 }}>
+                  {deleteReportError}
+                </p>
+              )}
               <div className="modal-actions">
-                <button className="outline-button" onClick={() => setDeleteReportConfirm(null)}>Cancel</button>
+                <button className="outline-button" onClick={() => { setDeleteReportConfirm(null); setDeleteReportError(""); }}>Cancel</button>
                 <button className="primary-button" style={{ background: "var(--red)" }} onClick={deleteReport} disabled={deletingReport}>
                   {deletingReport ? "Deleting…" : "Delete report"}
                 </button>
@@ -1305,8 +1322,13 @@ function App() {
               <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.6, margin: "0 0 20px" }}>
                 This will permanently remove <strong>{deleteEmployeeConfirm.name}</strong> from the employee directory. All associated records and absence history will remain intact.
               </p>
+              {deleteEmployeeError && (
+                <p style={{ color: "var(--red)", fontSize: 11, marginBottom: 16, padding: 10, background: "rgba(255,59,48,0.1)", borderRadius: 6 }}>
+                  {deleteEmployeeError}
+                </p>
+              )}
               <div className="modal-actions">
-                <button className="outline-button" onClick={() => setDeleteEmployeeConfirm(null)}>Cancel</button>
+                <button className="outline-button" onClick={() => { setDeleteEmployeeConfirm(null); setDeleteEmployeeError(""); }}>Cancel</button>
                 <button className="primary-button" style={{ background: "var(--red)" }} onClick={deleteEmployee} disabled={deletingEmployee}>
                   {deletingEmployee ? "Removing…" : "Remove employee"}
                 </button>
@@ -1324,10 +1346,20 @@ function PageHead({ eyebrow, title, children }) {
 }
 
 function Overview({ me, employeesCount, nightCount, reportsCount, onViewEmployees, onViewReports, onViewAbsents, canAdd, onAdd }) {
+  const [absenceStats, setAbsenceStats] = useState([]);
   const today = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).toUpperCase();
   const nightPct = employeesCount ? Math.round((nightCount / employeesCount) * 100) : 0;
-  // Mock absence data for last 12 days - will be replaced with real data
-  const mockAbsences = [2, 1, 3, 0, 2, 1, 0, 1, 3, 0, 1, 2];
+
+  // Fetch real absence data for last 7 days
+  useEffect(() => {
+    api.getAbsenceStats(7)
+      .then(data => setAbsenceStats(data))
+      .catch(() => setAbsenceStats([]));
+  }, []);
+
+  const absenceCounts = absenceStats.map(stat => stat.count);
+  const maxAbsences = Math.max(10, ...absenceCounts);
+
   return (
     <div className="page">
       <PageHead eyebrow={today} title={`Good day, ${me.profile.full_name.split(" ")[0]}.`}>
@@ -1353,22 +1385,28 @@ function Overview({ me, employeesCount, nightCount, reportsCount, onViewEmployee
       <div className="overview-grid">
         <section className="data-section" style={{ cursor: "pointer" }} onClick={onViewAbsents}>
           <div className="section-head">
-            <div><span className="eyebrow">WORKFORCE</span><h3>Daily absences (Last 12 days)</h3></div>
+            <div><span className="eyebrow">WORKFORCE</span><h3>Daily absences (Last 7 days)</h3></div>
             <button data-testid="overview-view-absents-button" className="text-button" onClick={(e) => { e.stopPropagation(); onViewAbsents(); }}>View attendance <span>→</span></button>
           </div>
           <div className="attendance-chart">
-            <div className="chart-y"><span>10</span><span>8</span><span>5</span><span>3</span><span>0</span></div>
+            <div className="chart-y"><span>{maxAbsences}</span><span>{Math.floor(maxAbsences * 0.75)}</span><span>{Math.floor(maxAbsences * 0.5)}</span><span>{Math.floor(maxAbsences * 0.25)}</span><span>0</span></div>
             <div className="bars">
-              {mockAbsences.map((count, i) => {
-                const maxAbsences = 10;
-                const height = (count / maxAbsences) * 100;
+              {absenceStats.length > 0 ? absenceStats.map((stat, i) => {
+                const height = maxAbsences > 0 ? (stat.count / maxAbsences) * 100 : 0;
+                const date = new Date(stat.date);
+                const dayLabel = date.toLocaleDateString("en-US", { weekday: "short" })[0]; // M, T, W, etc.
+                const formattedDate = date.toLocaleDateString("en-US", { month: "short", day: "numeric" }); // e.g., "Sep 20"
+                const isToday = i === absenceStats.length - 1;
                 return (
-                  <div className="bar-group" key={i}>
-                    <div className={`bar ${i > 8 ? "bright" : ""}`} style={{ height: `${height}%`, background: count === 0 ? "var(--green)" : undefined }} title={`${count} absent`} />
-                    <span>{["M", "T", "W", "T", "F", "S"][i % 6]}</span>
+                  <div className="bar-group" key={stat.date}>
+                    <div className="tooltip">{formattedDate}: {stat.count} {stat.count === 1 ? 'absence' : 'absences'}</div>
+                    <div className={`bar ${isToday ? "bright" : ""}`} style={{ height: `${height}%`, background: stat.count === 0 ? "var(--green)" : undefined }} />
+                    <span>{dayLabel}</span>
                   </div>
                 );
-              })}
+              }) : (
+                <div style={{ gridColumn: "1 / -1", textAlign: "center", color: "var(--muted)", padding: "20px" }}>Loading...</div>
+              )}
             </div>
           </div>
         </section>
