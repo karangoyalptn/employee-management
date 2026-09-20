@@ -116,6 +116,25 @@ api.get("/companies/lookup", async (req, res) => {
   res.json(data);
 });
 
+api.patch("/companies", async (req, res) => {
+  const ctx = await currentProfile(req);
+  if (ctx.error) return httpErr(res, ctx.error.status, ctx.error.detail);
+  if (!requireRole(ctx.profile, ["admin"])) return httpErr(res, 403, "Requires one of: admin");
+
+  const { name } = req.body || {};
+  if (!name || String(name).trim().length < 2) return httpErr(res, 400, "name required and must be at least 2 characters");
+
+  const { data, error } = await sb
+    .from("companies")
+    .update({ name: name.trim() })
+    .eq("id", ctx.company.id)
+    .select()
+    .single();
+
+  if (error) return httpErr(res, 500, error.message);
+  res.json(data);
+});
+
 // ---------- Auth / Profile ----------
 api.get("/auth/me", async (req, res) => {
   const ctx = await currentProfile(req);
